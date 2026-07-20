@@ -65,6 +65,7 @@ jobs:
             --packVersion ${{ steps.version.outputs.version }} `
             --packDir .\publish `
             --mainExe OneClickPortal.exe `
+            --icon .\assets\OneClickPortal.ico `
             --packTitle "원클릭업무포털" `
             --outputDir .\Releases
 

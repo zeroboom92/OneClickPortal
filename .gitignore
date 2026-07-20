@@ -4,5 +4,6 @@ obj/
 publish/
 Releases/
 .tools/
+tmp/
 *.user
 *.suo
