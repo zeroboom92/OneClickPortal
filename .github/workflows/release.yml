@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Read version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Publish application
+        shell: pwsh
+        run: |
+          dotnet publish .\BrowserThumbnailPrototype.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:Version=${{ steps.version.outputs.version }} `
+            --output .\publish
+
+      - name: Install Velopack CLI
+        shell: pwsh
+        run: dotnet tool install --global vpk --version 1.2.0
+
+      - name: Download previous release
+        shell: pwsh
+        env:
+          RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          vpk download github `
+            --repoUrl "https://github.com/${{ github.repository }}" `
+            --token $env:RELEASE_TOKEN
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "이전 릴리스가 없어 전체 패키지로 생성합니다."
+            $global:LASTEXITCODE = 0
+          }
+
+      - name: Build installer and update packages
+        shell: pwsh
+        run: |
+          vpk pack `
+            --packId OneClickPortal `
+            --packVersion ${{ steps.version.outputs.version }} `
+            --packDir .\publish `
+            --mainExe OneClickPortal.exe `
+            --packTitle "원클릭업무포털" `
+            --outputDir .\Releases
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          vpk upload github `
+            --repoUrl "https://github.com/${{ github.repository }}" `
+            --token $env:RELEASE_TOKEN `
+            --publish `
+            --releaseName "원클릭업무포털 ${{ steps.version.outputs.version }}" `
+            --tag "v${{ steps.version.outputs.version }}"
