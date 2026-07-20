@@ -38,7 +38,7 @@
 - `DevToolsAutomation.cs`: 로컬 Edge DevTools 검색, 탭 연결, DOM 명령과 실제 마우스·키 입력 전달
 - `PortalWorkflowController.cs`: 복무·출장·기안·품의 상태 기반 이동 절차
 - `Program.cs`: Windows Forms 진입점
-- `BrowserThumbnailPrototype.csproj`: .NET 8 Windows Forms 설정, 실행 파일명 `OneClickPortal`, 현재 버전 `0.1.2`
+- `BrowserThumbnailPrototype.csproj`: .NET 8 Windows Forms 설정, 실행 파일명 `OneClickPortal`, 현재 버전 `0.1.3`
 - `README.md`: 사용자 실행 및 사용 방법
 
 ## 검증 결과
