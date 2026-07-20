@@ -100,7 +100,7 @@ internal sealed class SettingsForm : Form
 
         var versionLabel = new Label
         {
-            Text = $"원클릭업무포털  ·  버전 {Application.ProductVersion}",
+            Text = $"원클릭업무포털 · v{GetDisplayVersion()}",
             AutoSize = true,
             Location = new Point(0, 0),
             ForeColor = Color.FromArgb(92, 102, 116),
@@ -109,7 +109,7 @@ internal sealed class SettingsForm : Form
 
         var copyrightLabel = new Label
         {
-            Text = "저작권: 원클릭업무포털, 청완초등학교 온영범",
+            Text = "© 2026 온영범 · 청완초등학교",
             AutoSize = true,
             Location = new Point(0, 21),
             ForeColor = Color.FromArgb(130, 138, 150),
@@ -137,6 +137,11 @@ internal sealed class SettingsForm : Form
     public bool PortalAutoRefreshEnabled => _portalAutoRefreshCheckBox.Checked;
 
     public int WindowOpacityPercent => _opacityTrackBar.Value;
+
+    private static string GetDisplayVersion()
+    {
+        return Application.ProductVersion.Split('+', 2)[0];
+    }
 
     private void UpdateOpacityLabel()
     {
