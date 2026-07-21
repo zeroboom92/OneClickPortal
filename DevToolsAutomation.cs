@@ -29,21 +29,26 @@ internal static class DevToolsDiscovery
         Timeout = TimeSpan.FromSeconds(1),
     };
 
-    public static async Task<int?> FindPortalPortAsync(CancellationToken cancellationToken = default)
+    public static async Task<int?> FindPortalPortAsync(
+        EducationOffice educationOffice,
+        CancellationToken cancellationToken = default)
     {
         var probes = Enumerable.Range(DefaultPort, PortProbeCount)
-            .Select(port => ProbePortalPortAsync(port, cancellationToken));
+            .Select(port => ProbePortalPortAsync(port, educationOffice, cancellationToken));
         var results = await Task.WhenAll(probes);
         cancellationToken.ThrowIfCancellationRequested();
         return results.Where(port => port is not null).Min();
     }
 
-    private static async Task<int?> ProbePortalPortAsync(int port, CancellationToken cancellationToken)
+    private static async Task<int?> ProbePortalPortAsync(
+        int port,
+        EducationOffice educationOffice,
+        CancellationToken cancellationToken)
     {
         try
         {
             var targets = await GetTargetsAsync(port, cancellationToken);
-            if (targets.Any(IsPortalRelatedTarget))
+            if (targets.Any(target => IsPortalRelatedTarget(target, educationOffice)))
             {
                 return port;
             }
@@ -75,12 +80,12 @@ internal static class DevToolsDiscovery
             : new Uri(value);
     }
 
-    private static bool IsPortalRelatedTarget(DevToolsTarget target)
+    private static bool IsPortalRelatedTarget(DevToolsTarget target, EducationOffice educationOffice)
     {
         return target.Type is "page" or "iframe"
-            && (target.Url.Contains("eduptl.kr", StringComparison.OrdinalIgnoreCase)
-                || target.Url.Contains("neis.go.kr", StringComparison.OrdinalIgnoreCase)
-                || target.Url.Contains("klef.jbe.go.kr", StringComparison.OrdinalIgnoreCase));
+            && (target.Url.Contains(educationOffice.PortalDomain, StringComparison.OrdinalIgnoreCase)
+                || target.Url.Contains(educationOffice.NiceDomain, StringComparison.OrdinalIgnoreCase)
+                || target.Url.Contains(educationOffice.EdufineDomain, StringComparison.OrdinalIgnoreCase));
     }
 }
 
@@ -96,6 +101,39 @@ internal sealed class DevToolsSession : IAsyncDisposable
 
     private DevToolsSession()
     {
+    }
+
+    public static async Task<string> CreateTargetAsync(
+        int port,
+        Uri uri,
+        CancellationToken cancellationToken = default)
+    {
+        var session = new DevToolsSession();
+        using var connectCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        connectCancellation.CancelAfter(CommandTimeout);
+        try
+        {
+            var browserUri = await DevToolsDiscovery.GetBrowserWebSocketUriAsync(port, connectCancellation.Token);
+            await session._socket.ConnectAsync(browserUri, connectCancellation.Token);
+            var result = await session.ExecuteRootCommandAsync(
+                "Target.createTarget",
+                new { url = uri.AbsoluteUri },
+                connectCancellation.Token);
+            var targetId = result.GetProperty("targetId").GetString()
+                ?? throw new InvalidOperationException("새 브라우저 탭을 만들지 못했습니다.");
+            AppLogger.Info("DevTools", $"공식 주소로 새 탭을 열었습니다: {uri.Host}");
+            return targetId;
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            var timeoutException = new TimeoutException("새 브라우저 탭을 여는 시간이 초과되었습니다.", exception);
+            AppLogger.Error("DevTools", "새 탭 열기 시간 초과", timeoutException);
+            throw timeoutException;
+        }
+        finally
+        {
+            await session.DisposeAsync();
+        }
     }
 
     public static async Task<DevToolsSession> ConnectAsync(

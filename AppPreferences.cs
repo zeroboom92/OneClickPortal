@@ -15,6 +15,8 @@ internal static class AppPreferences
     private const string AnonymousInstallationIdValueName = "AnonymousInstallationId";
     private const string LastUsageReportDateValueName = "LastUsageReportDateUtc";
     private const string LastPresenceReportValueName = "LastPresenceReportUtc";
+    private const string EducationOfficeValueName = "EducationOfficeCode";
+    private const string AlwaysOnTopValueName = "AlwaysOnTop";
 
     public static bool IsWindowsStartupEnabled()
     {
@@ -60,6 +62,34 @@ internal static class AppPreferences
         using var key = Registry.CurrentUser.CreateSubKey(SettingsKeyPath, writable: true)
             ?? throw new InvalidOperationException("사용 통계 설정을 저장하지 못했습니다.");
         key.SetValue(UsageTelemetryValueName, enabled ? 1 : 0, RegistryValueKind.DWord);
+    }
+
+    public static string GetEducationOfficeCode()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(SettingsKeyPath, writable: false);
+        var value = key?.GetValue(EducationOfficeValueName) as string;
+        return EducationOfficeCatalog.GetByCode(value).Code;
+    }
+
+    public static void SetEducationOfficeCode(string code)
+    {
+        var educationOffice = EducationOfficeCatalog.GetByCode(code);
+        using var key = Registry.CurrentUser.CreateSubKey(SettingsKeyPath, writable: true)
+            ?? throw new InvalidOperationException("소속 교육청 설정을 저장하지 못했습니다.");
+        key.SetValue(EducationOfficeValueName, educationOffice.Code, RegistryValueKind.String);
+    }
+
+    public static bool IsAlwaysOnTopEnabled()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(SettingsKeyPath, writable: false);
+        return key?.GetValue(AlwaysOnTopValueName) is int value && value != 0;
+    }
+
+    public static void SetAlwaysOnTopEnabled(bool enabled)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(SettingsKeyPath, writable: true)
+            ?? throw new InvalidOperationException("항상 위에 표시 설정을 저장하지 못했습니다.");
+        key.SetValue(AlwaysOnTopValueName, enabled ? 1 : 0, RegistryValueKind.DWord);
     }
 
     public static string GetOrCreateAnonymousInstallationId()

@@ -14,6 +14,8 @@
 - 전용 Edge 프로필 실행과 로컬 DevTools 연결 확인
 - 상단 `로그인` 버튼으로 전용 Edge를 실행하고 연결 후 `열기` 버튼으로 브라우저를 표시
 - 설정창에서 Windows 시작 시 자동 실행, 나이스·K-에듀파인 세션 자동 연장, 프로그램 투명도 설정 저장
+- 설정창에서 17개 시도교육청을 선택하며 로그인·나이스·K-에듀파인 주소에 동일하게 적용
+- 설정창에서 `프로그램을 항상 위에 표시`를 선택할 수 있고 기본값은 꺼짐
 - 설정창에서 로그인 없는 익명 사용 통계 전송을 켜거나 끌 수 있음
 - 프로그램 실행 시 무작위 로컬 설치 식별자의 SHA-256 해시와 앱 버전을 하루 한 번 Firebase로 전송
 - 한국 시간 오전 7시~11시에만 30분 간격으로 현재 사용자 신호를 보내고 최근 40분 활성 설치 수를 집계
@@ -24,8 +26,8 @@
 - Firebase 프로젝트 `oneclickportal`을 Blaze 요금제로 전환하고 서울 리전(`asia-northeast3`)에 Firestore, `recordUsage`, `getUsageSummary` 함수를 배포
 - 사용하지 않는 함수 컨테이너 이미지는 7일 후 자동 삭제하도록 Artifact Registry 정리 정책 설정
 - 설정창에 현재 버전과 저작권 문구 표시
-- 브라우저 연결은 포털 제어 채널 확인만으로 빠르게 완료하고 연결된 Edge를 최소화
-- 나이스와 K-에듀파인은 각 업무 버튼을 처음 누를 때 필요하면 열고 준비 상태를 확인
+- 브라우저 연결 시 업무포털에서 `나이스`와 `에듀파인` 문구를 포함한 클릭 가능 요소를 찾아 두 시스템을 미리 열고 준비 상태를 확인한 뒤 Edge를 최소화
+- 업무포털에서 항목을 찾지 못하거나 새 탭이 열리지 않으면 선택한 교육청의 공식 나이스·K-에듀파인 URL을 새 탭으로 여는 방식으로 대체
 - 나이스 및 K-에듀파인 탭 자동 탐색
 - 상태 기반 업무 화면 이동
   - 복무: 개인근무상황관리의 근무상황신청 창
@@ -44,13 +46,14 @@
 
 - `MainForm.cs`: 가로형 UI, 브라우저 창 연결, 워크플로우 실행 및 원본 창 복원
 - `SettingsForm.cs`: 시작 실행, 세션 자동 연장, 투명도, 현재 사용자 수, 버전·저작권 설정창
+- `EducationOffice.cs`: 17개 시도교육청 코드와 업무포털·나이스·K-에듀파인·EVPN 주소 규칙
 - `DevToolsAutomation.cs`: 로컬 Edge DevTools 검색, 탭 연결, DOM 명령과 실제 마우스·키 입력 전달
 - `PortalWorkflowController.cs`: 복무·출장·기안·품의 상태 기반 이동 절차
 - `Program.cs`: Windows Forms 진입점
 - `UsageTelemetry.cs`: 업무 흐름을 막지 않는 일 1회 통계와 오전 시간대 현재 사용자 신호 전송·조회
 - `functions/`: Firebase HTTP Function 및 입력 검증 테스트
 - `firebase.json`, `firestore.rules`: Firebase 배포 설정과 클라이언트 접근 차단 규칙
-- `BrowserThumbnailPrototype.csproj`: .NET 8 Windows Forms 설정, 실행 파일명 `OneClickPortal`, 현재 버전 `0.1.4`
+- `BrowserThumbnailPrototype.csproj`: .NET 8 Windows Forms 설정, 실행 파일명 `OneClickPortal`, 현재 버전 `0.1.5`
 - `README.md`: 사용자 실행 및 사용 방법
 
 ## 검증 결과

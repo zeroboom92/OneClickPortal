@@ -20,23 +20,23 @@ internal sealed record WorkflowResult(
 
 internal sealed class PortalWorkflowController
 {
-    private const string PortalDomain = "jbe.eduptl.kr";
-    private const string NiceDomain = "jbe.neis.go.kr";
-    private const string EdufineDomain = "klef.jbe.go.kr";
     private const int SessionExtensionThresholdSeconds = 20 * 60;
     private static readonly TimeSpan SessionExtensionRetryDelay = TimeSpan.FromMinutes(5);
     private static readonly ConcurrentDictionary<string, DateTime> LastSessionExtensionAttemptUtc = new();
 
     private readonly int _devToolsPort;
+    private readonly EducationOffice _educationOffice;
     private readonly Action<string> _reportProgress;
     private readonly Action? _prepareBrowserWindowForBackground;
 
     public PortalWorkflowController(
         int devToolsPort,
+        EducationOffice educationOffice,
         Action<string> reportProgress,
         Action? prepareBrowserWindowForBackground = null)
     {
         _devToolsPort = devToolsPort;
+        _educationOffice = educationOffice;
         _reportProgress = reportProgress;
         _prepareBrowserWindowForBackground = prepareBrowserWindowForBackground;
     }
@@ -50,7 +50,7 @@ internal sealed class PortalWorkflowController
             {
                 PortalTaskKind.NiceHome => OpenSystemHomeAsync(
                     "나이스",
-                    NiceDomain,
+                    _educationOffice.NiceDomain,
                     "나이스",
                     WaitForNiceReadyAsync,
                     cancellationToken),
@@ -66,7 +66,7 @@ internal sealed class PortalWorkflowController
                     cancellationToken),
                 PortalTaskKind.EdufineHome => OpenSystemHomeAsync(
                     "K-에듀파인",
-                    EdufineDomain,
+                    _educationOffice.EdufineDomain,
                     "K-에듀파인",
                     WaitForEdufineReadyAsync,
                     cancellationToken),
@@ -84,12 +84,52 @@ internal sealed class PortalWorkflowController
         }
     }
 
+    public async Task PrepareApplicationTargetsAsync(CancellationToken cancellationToken = default)
+    {
+        AppLogger.Info("Connection", "업무 시스템 준비 시작");
+
+        _reportProgress("나이스를 미리 여는 중");
+        var niceTarget = await EnsureApplicationTargetAsync(
+            _educationOffice.NiceDomain,
+            "나이스",
+            "나이스",
+            _educationOffice.NiceUri,
+            cancellationToken);
+        await using (var niceSession = await DevToolsSession.ConnectAsync(
+            _devToolsPort,
+            niceTarget.Id,
+            cancellationToken))
+        {
+            await WaitForNiceReadyAsync(niceSession, cancellationToken);
+        }
+        AppLogger.Info("Connection", "나이스 준비 완료");
+
+        _reportProgress("K-에듀파인을 미리 여는 중");
+        var edufineTarget = await EnsureApplicationTargetAsync(
+            _educationOffice.EdufineDomain,
+            "에듀파인",
+            "K-에듀파인",
+            _educationOffice.EdufineUri,
+            cancellationToken);
+        await using (var edufineSession = await DevToolsSession.ConnectAsync(
+            _devToolsPort,
+            edufineTarget.Id,
+            cancellationToken))
+        {
+            await WaitForEdufineReadyAsync(edufineSession, cancellationToken);
+        }
+        AppLogger.Info("Connection", "K-에듀파인 준비 완료");
+
+        _reportProgress("나이스와 K-에듀파인 준비 완료");
+        AppLogger.Info("Connection", "업무 시스템 준비 완료");
+    }
+
     public async Task ExtendExpiringSessionsAsync(CancellationToken cancellationToken = default)
     {
         AppLogger.Info("SessionRefresh", "나이스·K-에듀파인 세션 남은 시간 확인 시작");
         var targets = await DevToolsDiscovery.GetTargetsAsync(_devToolsPort, cancellationToken);
-        await ExtendApplicationSessionAsync(targets, "나이스", NiceDomain, cancellationToken);
-        await ExtendApplicationSessionAsync(targets, "K-에듀파인", EdufineDomain, cancellationToken);
+        await ExtendApplicationSessionAsync(targets, "나이스", _educationOffice.NiceDomain, cancellationToken);
+        await ExtendApplicationSessionAsync(targets, "K-에듀파인", _educationOffice.EdufineDomain, cancellationToken);
     }
 
     private async Task ExtendApplicationSessionAsync(
@@ -285,7 +325,24 @@ internal sealed class PortalWorkflowController
         CancellationToken cancellationToken)
     {
         _reportProgress($"{displayName}: 화면 준비 중");
-        var target = await EnsureApplicationTargetAsync(domain, portalButtonName, cancellationToken);
+        var portalSearchText = string.Equals(
+            domain,
+            _educationOffice.EdufineDomain,
+            StringComparison.OrdinalIgnoreCase)
+            ? "에듀파인"
+            : "나이스";
+        var directUri = string.Equals(
+            domain,
+            _educationOffice.EdufineDomain,
+            StringComparison.OrdinalIgnoreCase)
+            ? _educationOffice.EdufineUri
+            : _educationOffice.NiceUri;
+        var target = await EnsureApplicationTargetAsync(
+            domain,
+            portalSearchText,
+            portalButtonName,
+            directUri,
+            cancellationToken);
         await using var session = await DevToolsSession.ConnectAsync(_devToolsPort, target.Id, cancellationToken);
         await waitUntilReady(session, cancellationToken);
         await PrepareBrowserForUserAsync(session, cancellationToken);
@@ -302,8 +359,10 @@ internal sealed class PortalWorkflowController
     {
         _reportProgress($"{displayName}: 나이스 연결 확인 중");
         var target = await EnsureApplicationTargetAsync(
-            NiceDomain,
+            _educationOffice.NiceDomain,
             "나이스",
+            "나이스",
+            _educationOffice.NiceUri,
             cancellationToken);
         await using var session = await DevToolsSession.ConnectAsync(_devToolsPort, target.Id, cancellationToken);
         await WaitForNiceReadyAsync(session, cancellationToken);
@@ -357,8 +416,10 @@ internal sealed class PortalWorkflowController
     {
         _reportProgress("기안: K-에듀파인 연결 확인 중");
         var target = await EnsureApplicationTargetAsync(
-            EdufineDomain,
+            _educationOffice.EdufineDomain,
+            "에듀파인",
             "K-에듀파인",
+            _educationOffice.EdufineUri,
             cancellationToken);
         await using var session = await DevToolsSession.ConnectAsync(_devToolsPort, target.Id, cancellationToken);
         await WaitForEdufineReadyAsync(session, cancellationToken);
@@ -404,8 +465,10 @@ internal sealed class PortalWorkflowController
     {
         _reportProgress("품의: K-에듀파인 연결 확인 중");
         var target = await EnsureApplicationTargetAsync(
-            EdufineDomain,
+            _educationOffice.EdufineDomain,
+            "에듀파인",
             "K-에듀파인",
+            _educationOffice.EdufineUri,
             cancellationToken);
         await using var session = await DevToolsSession.ConnectAsync(_devToolsPort, target.Id, cancellationToken);
         await WaitForEdufineReadyAsync(session, cancellationToken);
@@ -445,7 +508,9 @@ internal sealed class PortalWorkflowController
 
     private async Task<DevToolsTarget> EnsureApplicationTargetAsync(
         string domain,
-        string portalButtonName,
+        string portalSearchText,
+        string displayName,
+        Uri directUri,
         CancellationToken cancellationToken)
     {
         var targets = await DevToolsDiscovery.GetTargetsAsync(_devToolsPort, cancellationToken);
@@ -455,34 +520,90 @@ internal sealed class PortalWorkflowController
             return existing;
         }
 
-        var portal = FindPageTarget(targets, PortalDomain)
-            ?? throw new InvalidOperationException("로그인된 업무포털 탭을 찾지 못했습니다.");
-        await using (var portalSession = await DevToolsSession.ConnectAsync(_devToolsPort, portal.Id, cancellationToken))
+        var portalTargets = targets
+            .Where(target => target.Type is "page" or "iframe"
+                && target.Url.Contains(_educationOffice.PortalDomain, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(target => target.Type == "page" ? 0 : 1)
+            .ToList();
+        var clicked = false;
+        foreach (var portal in portalTargets)
         {
-            var clicked = await portalSession.EvaluateBooleanAsync(
-                ClickPortalApplicationScript(portalButtonName),
-                userGesture: true,
-                cancellationToken);
-            if (!clicked)
+            try
             {
-                throw new InvalidOperationException($"업무포털에서 {portalButtonName} 버튼을 찾지 못했습니다.");
+                await using var portalSession = await DevToolsSession.ConnectAsync(
+                    _devToolsPort,
+                    portal.Id,
+                    cancellationToken);
+                clicked = await portalSession.EvaluateBooleanAsync(
+                    ClickPortalApplicationScript(portalSearchText),
+                    userGesture: true,
+                    cancellationToken);
+                if (clicked)
+                {
+                    AppLogger.Info("Connection", $"업무포털에서 {displayName} 항목을 찾아 실행했습니다.");
+                    break;
+                }
+            }
+            catch (Exception exception) when (
+                !cancellationToken.IsCancellationRequested
+                && exception is InvalidOperationException or TimeoutException)
+            {
+                AppLogger.Info("Connection", $"업무포털의 {displayName} 항목 탐색을 계속합니다: {exception.Message}");
             }
         }
 
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(45);
-        while (DateTime.UtcNow < deadline)
+        if (clicked)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            await Task.Delay(300, cancellationToken);
-            targets = await DevToolsDiscovery.GetTargetsAsync(_devToolsPort, cancellationToken);
-            existing = FindPageTarget(targets, domain);
+            existing = await WaitForApplicationTargetAsync(
+                domain,
+                TimeSpan.FromSeconds(15),
+                cancellationToken);
             if (existing is not null)
             {
                 return existing;
             }
+
+            AppLogger.Info("Connection", $"업무포털에서 {displayName}을 실행했지만 새 탭을 확인하지 못했습니다.");
+        }
+        else
+        {
+            AppLogger.Info("Connection", $"업무포털에서 {displayName} 항목을 찾지 못했습니다.");
         }
 
-        throw new TimeoutException($"{portalButtonName} 화면이 열리지 않았습니다. 로그인 또는 보안 프로그램 상태를 확인해 주세요.");
+        _reportProgress($"{displayName}: 공식 주소로 여는 중");
+        await DevToolsSession.CreateTargetAsync(_devToolsPort, directUri, cancellationToken);
+        existing = await WaitForApplicationTargetAsync(
+            domain,
+            TimeSpan.FromSeconds(45),
+            cancellationToken);
+        if (existing is not null)
+        {
+            AppLogger.Info("Connection", $"{displayName}을 공식 주소로 열었습니다.");
+            return existing;
+        }
+
+        throw new TimeoutException($"{displayName} 화면이 열리지 않았습니다. 로그인 또는 보안 프로그램 상태를 확인해 주세요.");
+    }
+
+    private async Task<DevToolsTarget?> WaitForApplicationTargetAsync(
+        string domain,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(300, cancellationToken);
+            var targets = await DevToolsDiscovery.GetTargetsAsync(_devToolsPort, cancellationToken);
+            var target = FindPageTarget(targets, domain);
+            if (target is not null)
+            {
+                return target;
+            }
+        }
+
+        return null;
     }
 
     private static DevToolsTarget? FindPageTarget(IEnumerable<DevToolsTarget> targets, string domain)
@@ -885,11 +1006,61 @@ internal sealed class PortalWorkflowController
         throw new TimeoutException(timeoutMessage, lastException);
     }
 
-    private static string ClickPortalApplicationScript(string applicationName)
+    private static string ClickPortalApplicationScript(string keyword)
     {
-        var value = JsonSerializer.Serialize(applicationName);
-        return "(()=>{const n=" + value + ";const a=[...document.querySelectorAll('a.menuBtn,a')].find(e=>"
-            + "(e.textContent||'').trim()===n&&e.getBoundingClientRect().width>0);if(!a)return false;a.click();return true;})()";
+        var value = JsonSerializer.Serialize(keyword);
+        return $$"""
+            (()=>{
+              const keyword={{value}};
+              const normalize=value=>(value||'').replace(/\s+/g,' ').trim();
+              const visible=element=>{
+                if(!element)return false;
+                const rect=element.getBoundingClientRect();
+                const view=element.ownerDocument?.defaultView;
+                const style=view?.getComputedStyle(element);
+                return rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0
+                  &&style?.display!=='none'&&style?.visibility!=='hidden'
+                  &&!element.disabled&&element.getAttribute?.('aria-disabled')!=='true';
+              };
+              const elementText=element=>normalize(
+                element.innerText||element.textContent||element.value
+                ||element.getAttribute?.('aria-label')||element.title||element.alt||'');
+              const actionableSelector='a,button,[role="button"],[onclick],input[type="button"],input[type="submit"],.menuBtn';
+              const searchableSelector=actionableSelector+',[aria-label],[title],img[alt]';
+              const documents=[];
+              const visit=documentToVisit=>{
+                if(!documentToVisit||documents.includes(documentToVisit))return;
+                documents.push(documentToVisit);
+                for(const frame of documentToVisit.querySelectorAll('iframe,frame')){
+                  try{visit(frame.contentDocument);}catch{}
+                }
+              };
+              visit(document);
+              const candidates=[];
+              for(const currentDocument of documents){
+                for(const element of currentDocument.querySelectorAll(searchableSelector)){
+                  if(!visible(element))continue;
+                  const text=elementText(element);
+                  if(!text||text.length>80||!text.includes(keyword))continue;
+                  const action=element.matches(actionableSelector)?element:element.closest(actionableSelector);
+                  if(!visible(action))continue;
+                  const actionText=elementText(action);
+                  const compact=actionText.replace(/[\s‐‑‒–—―-]/g,'');
+                  const exact=compact===keyword||compact===`K${keyword}`;
+                  const score=(exact?100:0)+(element===action?20:0)-actionText.length;
+                  const previous=candidates.find(candidate=>candidate.action===action);
+                  if(!previous)candidates.push({action,score});
+                  else if(score>previous.score)previous.score=score;
+                }
+              }
+              candidates.sort((left,right)=>right.score-left.score);
+              const best=candidates[0]?.action;
+              if(!best)return false;
+              best.scrollIntoView?.({block:'center',inline:'center'});
+              best.click();
+              return true;
+            })()
+            """;
     }
 
     private static string NiceMenuVisibleExpression(string menuName)

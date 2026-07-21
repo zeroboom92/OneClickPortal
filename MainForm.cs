@@ -43,7 +43,7 @@ public sealed class MainForm : Form
         Text = "원클릭 업무포털";
         StartPosition = FormStartPosition.Manual;
         FormBorderStyle = FormBorderStyle.None;
-        TopMost = true;
+        TopMost = AppPreferences.IsAlwaysOnTopEnabled();
         MinimumSize = new Size(540, WidgetHeight);
         Size = new Size(WidgetWidth, WidgetHeight);
         ShowInTaskbar = true;
@@ -335,6 +335,8 @@ public sealed class MainForm : Form
             AppPreferences.IsWindowsStartupEnabled(),
             AppPreferences.IsPortalAutoRefreshEnabled(),
             AppPreferences.IsUsageTelemetryEnabled(),
+            AppPreferences.IsAlwaysOnTopEnabled(),
+            AppPreferences.GetEducationOfficeCode(),
             AppPreferences.GetWindowOpacityPercent());
         if (dialog.ShowDialog(this) != DialogResult.OK)
         {
@@ -343,14 +345,30 @@ public sealed class MainForm : Form
 
         try
         {
+            var previousEducationOfficeCode = AppPreferences.GetEducationOfficeCode();
+            var educationOfficeChanged = !string.Equals(
+                previousEducationOfficeCode,
+                dialog.EducationOfficeCode,
+                StringComparison.OrdinalIgnoreCase);
             AppPreferences.SetWindowsStartupEnabled(dialog.WindowsStartupEnabled);
             AppPreferences.SetPortalAutoRefreshEnabled(dialog.PortalAutoRefreshEnabled);
             AppPreferences.SetUsageTelemetryEnabled(dialog.UsageTelemetryEnabled);
+            AppPreferences.SetAlwaysOnTopEnabled(dialog.AlwaysOnTopEnabled);
+            AppPreferences.SetEducationOfficeCode(dialog.EducationOfficeCode);
             AppPreferences.SetWindowOpacityPercent(dialog.WindowOpacityPercent);
             ApplyWindowOpacity();
+            TopMost = dialog.AlwaysOnTopEnabled;
             UpdateAutoRefreshTimer();
+            if (educationOfficeChanged && _sourceWindow != IntPtr.Zero)
+            {
+                DisconnectBrowser();
+                SetStatus("교육청이 변경되었습니다. 새 로그인 창을 열어 주세요.");
+            }
+            else
+            {
+                SetStatus("설정을 저장했습니다.");
+            }
             AppLogger.Info("Preferences", "설정을 저장했습니다.");
-            SetStatus("설정을 저장했습니다.");
         }
         catch (Exception exception)
         {
@@ -486,13 +504,16 @@ public sealed class MainForm : Form
         _connectedProcessName = selected.DisplayName;
         _devToolsPort = null;
         _workflowRunning = true;
-        _workflowCancellationSource = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        _workflowCancellationSource = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         UpdateConnectionControls();
 
         try
         {
             SetConnectionStatus($"{selected.DisplayName} 연결 확인 중");
-            _devToolsPort = await DevToolsDiscovery.FindPortalPortAsync(_workflowCancellationSource.Token);
+            var educationOffice = EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode());
+            _devToolsPort = await DevToolsDiscovery.FindPortalPortAsync(
+                educationOffice,
+                _workflowCancellationSource.Token);
             if (_devToolsPort is null)
             {
                 SetConnectionStatus($"{selected.DisplayName} 로그인 확인 필요");
@@ -506,6 +527,15 @@ public sealed class MainForm : Form
             }
             else
             {
+                var controller = new PortalWorkflowController(
+                    _devToolsPort.Value,
+                    educationOffice,
+                    message =>
+                    {
+                        AppLogger.Info("Progress", message);
+                        SetConnectionStatus(message);
+                    });
+                await controller.PrepareApplicationTargetsAsync(_workflowCancellationSource.Token);
                 UpdateAutoRefreshTimer();
                 AppLogger.Info(
                     "Connection",
@@ -575,7 +605,8 @@ public sealed class MainForm : Form
             startInfo.ArgumentList.Add($"--user-data-dir={profilePath}");
             startInfo.ArgumentList.Add("--start-maximized");
             startInfo.ArgumentList.Add("--new-window");
-            startInfo.ArgumentList.Add("https://jbe.eduptl.kr/");
+            var educationOffice = EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode());
+            startInfo.ArgumentList.Add(educationOffice.PortalUri.AbsoluteUri);
             Process.Start(startInfo);
 
             SetStatus("업무포털 로그인 창을 열었습니다. 로그인 후 창 목록을 새로고침해 주세요.");
@@ -619,6 +650,7 @@ public sealed class MainForm : Form
             MakeSourceWindowTransparent();
             var controller = new PortalWorkflowController(
                 _devToolsPort.Value,
+                EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode()),
                 message =>
                 {
                     AppLogger.Info("Progress", message);
@@ -690,7 +722,10 @@ public sealed class MainForm : Form
         try
         {
             _sessionCheckCancellationSource = new CancellationTokenSource(TimeSpan.FromSeconds(45));
-            var controller = new PortalWorkflowController(_devToolsPort.Value, _ => { });
+            var controller = new PortalWorkflowController(
+                _devToolsPort.Value,
+                EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode()),
+                _ => { });
             await controller.ExtendExpiringSessionsAsync(_sessionCheckCancellationSource.Token);
         }
         catch (OperationCanceledException)
