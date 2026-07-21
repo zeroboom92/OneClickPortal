@@ -12,8 +12,13 @@ internal static class Program
         VelopackApp.Build().Run();
         ApplicationConfiguration.Initialize();
         using var mainForm = new MainForm();
-        mainForm.Shown += async (_, _) => await AppUpdater.CheckForUpdatesAsync();
+        mainForm.Shown += async (_, _) =>
+        {
+            UsageTelemetry.Start();
+            await AppUpdater.CheckForUpdatesAsync();
+        };
         mainForm.Show();
         Application.Run(mainForm);
+        UsageTelemetry.Stop();
     }
 }

@@ -11,9 +11,18 @@ internal sealed record DevToolsTarget(
     [property: JsonPropertyName("title")] string Title,
     [property: JsonPropertyName("url")] string Url);
 
+internal sealed class DevToolsCommandTimeoutException : TimeoutException
+{
+    public DevToolsCommandTimeoutException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
 internal static class DevToolsDiscovery
 {
     public const int DefaultPort = 9222;
+    private const int PortProbeCount = 11;
 
     private static readonly HttpClient HttpClient = new()
     {
@@ -22,20 +31,28 @@ internal static class DevToolsDiscovery
 
     public static async Task<int?> FindPortalPortAsync(CancellationToken cancellationToken = default)
     {
-        for (var port = DefaultPort; port <= DefaultPort + 10; port++)
+        var probes = Enumerable.Range(DefaultPort, PortProbeCount)
+            .Select(port => ProbePortalPortAsync(port, cancellationToken));
+        var results = await Task.WhenAll(probes);
+        cancellationToken.ThrowIfCancellationRequested();
+        return results.Where(port => port is not null).Min();
+    }
+
+    private static async Task<int?> ProbePortalPortAsync(int port, CancellationToken cancellationToken)
+    {
+        try
         {
-            try
+            var targets = await GetTargetsAsync(port, cancellationToken);
+            if (targets.Any(IsPortalRelatedTarget))
             {
-                var targets = await GetTargetsAsync(port, cancellationToken);
-                if (targets.Any(IsPortalRelatedTarget))
-                {
-                    return port;
-                }
+                return port;
             }
-            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
-            {
-                // The port is not a compatible local DevTools endpoint.
-            }
+        }
+        catch (Exception exception) when (
+            !cancellationToken.IsCancellationRequested
+            && exception is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            // The port is not a compatible local DevTools endpoint.
         }
 
         return null;
@@ -69,9 +86,11 @@ internal static class DevToolsDiscovery
 
 internal sealed class DevToolsSession : IAsyncDisposable
 {
+    private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(12);
     private readonly ClientWebSocket _socket = new();
     private readonly SemaphoreSlim _commandLock = new(1, 1);
     private int _nextCommandId;
+    private int _disposed;
     private string? _sessionId;
     private string? _targetId;
 
@@ -85,19 +104,28 @@ internal sealed class DevToolsSession : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         var session = new DevToolsSession();
+        using var connectCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        connectCancellation.CancelAfter(CommandTimeout);
         try
         {
-            var browserUri = await DevToolsDiscovery.GetBrowserWebSocketUriAsync(port, cancellationToken);
-            await session._socket.ConnectAsync(browserUri, cancellationToken);
+            var browserUri = await DevToolsDiscovery.GetBrowserWebSocketUriAsync(port, connectCancellation.Token);
+            await session._socket.ConnectAsync(browserUri, connectCancellation.Token);
             var result = await session.ExecuteRootCommandAsync(
                 "Target.attachToTarget",
                 new { targetId, flatten = true },
-                cancellationToken);
+                connectCancellation.Token);
             session._sessionId = result.GetProperty("sessionId").GetString()
                 ?? throw new InvalidOperationException("브라우저 탭에 연결하지 못했습니다.");
             session._targetId = targetId;
             AppLogger.Info("DevTools", "브라우저 탭 연결 완료");
             return session;
+        }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            var timeoutException = new TimeoutException("브라우저 탭 연결 응답 시간이 초과되었습니다.", exception);
+            AppLogger.Error("DevTools", "브라우저 탭 연결 시간 초과", timeoutException);
+            await session.DisposeAsync();
+            throw timeoutException;
         }
         catch (Exception exception)
         {
@@ -189,14 +217,6 @@ internal sealed class DevToolsSession : IAsyncDisposable
             cancellationToken);
     }
 
-    public Task ReloadAsync(CancellationToken cancellationToken = default)
-    {
-        return ExecuteSessionCommandWithoutResultAsync(
-            "Page.reload",
-            new { ignoreCache = false },
-            cancellationToken);
-    }
-
     public async Task MaximizeTargetWindowAsync(CancellationToken cancellationToken = default)
     {
         if (_targetId is null)
@@ -274,27 +294,24 @@ internal sealed class DevToolsSession : IAsyncDisposable
         await ExecuteSessionCommandWithoutResultAsync("Input.dispatchKeyEvent", keyUp, cancellationToken);
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return ValueTask.CompletedTask;
+        }
+
         try
         {
-            if (_socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-            {
-                await _socket.CloseAsync(
-                    WebSocketCloseStatus.NormalClosure,
-                    "done",
-                    CancellationToken.None);
-            }
-        }
-        catch (WebSocketException)
-        {
-            // The browser may close the debugging socket first.
+            _socket.Abort();
         }
         finally
         {
             _socket.Dispose();
             _commandLock.Dispose();
         }
+
+        return ValueTask.CompletedTask;
     }
 
     private Task<JsonElement> ExecuteRootCommandAsync(
@@ -332,9 +349,14 @@ internal sealed class DevToolsSession : IAsyncDisposable
         bool includeSessionId,
         CancellationToken cancellationToken)
     {
-        await _commandLock.WaitAsync(cancellationToken);
+        using var commandCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        commandCancellation.CancelAfter(CommandTimeout);
+        var commandToken = commandCancellation.Token;
+        var lockAcquired = false;
         try
         {
+            await _commandLock.WaitAsync(commandToken);
+            lockAcquired = true;
             var commandId = Interlocked.Increment(ref _nextCommandId);
             object command = includeSessionId
                 ? new { id = commandId, sessionId = _sessionId, method, @params = parameters }
@@ -344,11 +366,11 @@ internal sealed class DevToolsSession : IAsyncDisposable
                 new ArraySegment<byte>(payload),
                 WebSocketMessageType.Text,
                 true,
-                cancellationToken);
+                commandToken);
 
             while (true)
             {
-                using var message = await ReceiveMessageAsync(cancellationToken);
+                using var message = await ReceiveMessageAsync(commandToken);
                 var root = message.RootElement;
                 if (!root.TryGetProperty("id", out var responseId) || responseId.GetInt32() != commandId)
                 {
@@ -365,9 +387,21 @@ internal sealed class DevToolsSession : IAsyncDisposable
                 return root.GetProperty("result").Clone();
             }
         }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            _socket.Abort();
+            var timeoutException = new DevToolsCommandTimeoutException(
+                $"브라우저 제어 명령({method}) 응답 시간이 초과되었습니다.",
+                exception);
+            AppLogger.Error("DevTools", $"명령 시간 초과: {method}", timeoutException);
+            throw timeoutException;
+        }
         finally
         {
-            _commandLock.Release();
+            if (lockAcquired)
+            {
+                _commandLock.Release();
+            }
         }
     }
 

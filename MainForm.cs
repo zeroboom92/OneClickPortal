@@ -23,15 +23,18 @@ public sealed class MainForm : Form
     private readonly Button _closeButton = new();
     private readonly List<Button> _taskButtons = new();
     private readonly System.Windows.Forms.Timer _healthTimer = new() { Interval = 1000 };
-    private readonly System.Windows.Forms.Timer _niceRefreshTimer = new() { Interval = 10 * 60 * 1000 };
+    private readonly System.Windows.Forms.Timer _portalSessionTimer = new() { Interval = 60 * 1000 };
+    private readonly SemaphoreSlim _portalOperationGate = new(1, 1);
 
     private IntPtr _sourceWindow;
     private bool _workflowRunning;
-    private bool _niceRefreshRunning;
+    private bool _portalSessionCheckRunning;
     private bool _applyingWindowShape;
+    private bool _isClosing;
     private string? _connectedProcessName;
     private int? _devToolsPort;
     private CancellationTokenSource? _workflowCancellationSource;
+    private CancellationTokenSource? _sessionCheckCancellationSource;
     private int _sourceExtendedStyle;
     private bool _sourceTransparent;
 
@@ -40,7 +43,7 @@ public sealed class MainForm : Form
         Text = "원클릭 업무포털";
         StartPosition = FormStartPosition.Manual;
         FormBorderStyle = FormBorderStyle.None;
-        TopMost = false;
+        TopMost = true;
         MinimumSize = new Size(540, WidgetHeight);
         Size = new Size(WidgetWidth, WidgetHeight);
         ShowInTaskbar = true;
@@ -77,9 +80,17 @@ public sealed class MainForm : Form
             AppLogger.Info("Application", "프로그램 종료");
             DisconnectBrowser();
         };
+        FormClosing += (_, _) =>
+        {
+            _isClosing = true;
+            _healthTimer.Stop();
+            _portalSessionTimer.Stop();
+            _workflowCancellationSource?.Cancel();
+            _sessionCheckCancellationSource?.Cancel();
+        };
         _healthTimer.Tick += (_, _) => CheckSourceWindow();
         _healthTimer.Start();
-        _niceRefreshTimer.Tick += async (_, _) => await RefreshNiceInBackgroundAsync();
+        _portalSessionTimer.Tick += async (_, _) => await CheckPortalSessionsInBackgroundAsync();
     }
 
     private void BuildUi()
@@ -323,6 +334,7 @@ public sealed class MainForm : Form
         using var dialog = new SettingsForm(
             AppPreferences.IsWindowsStartupEnabled(),
             AppPreferences.IsPortalAutoRefreshEnabled(),
+            AppPreferences.IsUsageTelemetryEnabled(),
             AppPreferences.GetWindowOpacityPercent());
         if (dialog.ShowDialog(this) != DialogResult.OK)
         {
@@ -333,6 +345,7 @@ public sealed class MainForm : Form
         {
             AppPreferences.SetWindowsStartupEnabled(dialog.WindowsStartupEnabled);
             AppPreferences.SetPortalAutoRefreshEnabled(dialog.PortalAutoRefreshEnabled);
+            AppPreferences.SetUsageTelemetryEnabled(dialog.UsageTelemetryEnabled);
             AppPreferences.SetWindowOpacityPercent(dialog.WindowOpacityPercent);
             ApplyWindowOpacity();
             UpdateAutoRefreshTimer();
@@ -355,11 +368,12 @@ public sealed class MainForm : Form
     {
         if (AppPreferences.IsPortalAutoRefreshEnabled() && _sourceWindow != IntPtr.Zero && _devToolsPort is not null)
         {
-            _niceRefreshTimer.Start();
+            _portalSessionTimer.Start();
         }
         else
         {
-            _niceRefreshTimer.Stop();
+            _portalSessionTimer.Stop();
+            _sessionCheckCancellationSource?.Cancel();
         }
     }
 
@@ -467,16 +481,18 @@ public sealed class MainForm : Form
         }
 
         _sourceWindow = selected.Handle;
+        _sourceTransparent = false;
         _sourceExtendedStyle = NativeMethods.GetWindowLong(selected.Handle, NativeMethods.GWL_EXSTYLE);
         _connectedProcessName = selected.DisplayName;
         _devToolsPort = null;
         _workflowRunning = true;
+        _workflowCancellationSource = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         UpdateConnectionControls();
 
         try
         {
             SetConnectionStatus($"{selected.DisplayName} 연결 확인 중");
-            _devToolsPort = await DevToolsDiscovery.FindPortalPortAsync();
+            _devToolsPort = await DevToolsDiscovery.FindPortalPortAsync(_workflowCancellationSource.Token);
             if (_devToolsPort is null)
             {
                 SetConnectionStatus($"{selected.DisplayName} 로그인 확인 필요");
@@ -490,28 +506,21 @@ public sealed class MainForm : Form
             }
             else
             {
-                using var warmUpCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(90));
-                var controller = new PortalWorkflowController(
-                    _devToolsPort.Value,
-                    message =>
-                    {
-                        AppLogger.Info("Progress", message);
-                        SetStatus(message);
-                    });
-                await controller.WarmUpAsync(warmUpCancellation.Token);
-                if (AppPreferences.IsPortalAutoRefreshEnabled())
-                {
-                    _niceRefreshTimer.Start();
-                    AppLogger.Info("NiceRefresh", "나이스 10분 자동 갱신을 시작했습니다.");
-                }
-                else
-                {
-                    _niceRefreshTimer.Stop();
-                    AppLogger.Info("NiceRefresh", "설정에 따라 나이스 자동 갱신을 시작하지 않습니다.");
-                }
+                UpdateAutoRefreshTimer();
+                AppLogger.Info(
+                    "Connection",
+                    AppPreferences.IsPortalAutoRefreshEnabled()
+                        ? "나이스·K-에듀파인 세션 자동 연장 감시를 시작했습니다."
+                        : "설정에 따라 세션 자동 연장 감시를 시작하지 않습니다.");
                 NativeMethods.ShowWindowAsync(_sourceWindow, NativeMethods.SW_MINIMIZE);
                 SetConnectionStatus($"{selected.DisplayName} 연결됨");
             }
+        }
+        catch (OperationCanceledException) when (_isClosing)
+        {
+            _sourceWindow = IntPtr.Zero;
+            _connectedProcessName = null;
+            _devToolsPort = null;
         }
         catch (Exception exception)
         {
@@ -530,8 +539,13 @@ public sealed class MainForm : Form
         }
         finally
         {
+            _workflowCancellationSource?.Dispose();
+            _workflowCancellationSource = null;
             _workflowRunning = false;
-            UpdateConnectionControls();
+            if (!_isClosing && !IsDisposed && !Disposing)
+            {
+                UpdateConnectionControls();
+            }
         }
     }
 
@@ -593,14 +607,15 @@ public sealed class MainForm : Form
             return;
         }
 
+        _sessionCheckCancellationSource?.Cancel();
         _workflowRunning = true;
-        _workflowCancellationSource = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        _workflowCancellationSource = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         UpdateConnectionControls();
-        var wasVisible = Visible;
-        TopMost = false;
-        Hide();
+        var gateAcquired = false;
         try
         {
+            await _portalOperationGate.WaitAsync(_workflowCancellationSource.Token);
+            gateAcquired = true;
             MakeSourceWindowTransparent();
             var controller = new PortalWorkflowController(
                 _devToolsPort.Value,
@@ -631,13 +646,14 @@ public sealed class MainForm : Form
         }
         catch (OperationCanceledException)
         {
-            MinimizeSourceWindow();
+            ShowSourceWindowMaximized();
+            AppLogger.Info("Workflow", $"{taskKind}: 사용자가 취소했거나 전체 제한 시간을 넘었습니다.");
             SetStatus("업무 화면 이동이 취소되었거나 시간이 초과되었습니다.");
         }
         catch (Exception exception)
         {
             AppLogger.Error("Application", "업무 화면 이동 실패", exception);
-            MinimizeSourceWindow();
+            ShowSourceWindowMaximized();
             SetStatus($"이동 실패: {exception.Message}");
             MessageBox.Show(this, exception.Message, "업무 화면 이동 실패", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
@@ -646,37 +662,55 @@ public sealed class MainForm : Form
             _workflowCancellationSource.Dispose();
             _workflowCancellationSource = null;
             _workflowRunning = false;
-            if (wasVisible && !IsDisposed)
+            if (gateAcquired)
             {
-                PositionAtSavedLocationOrBottomRight();
-                TopMost = false;
-                Show();
+                _portalOperationGate.Release();
             }
-            UpdateConnectionControls();
+            if (!_isClosing && !IsDisposed && !Disposing)
+            {
+                UpdateConnectionControls();
+            }
         }
     }
 
-    private async Task RefreshNiceInBackgroundAsync()
+    private async Task CheckPortalSessionsInBackgroundAsync()
     {
-        if (_niceRefreshRunning || _workflowRunning || _devToolsPort is null || _sourceWindow == IntPtr.Zero)
+        if (_portalSessionCheckRunning || _workflowRunning || _devToolsPort is null || _sourceWindow == IntPtr.Zero)
         {
             return;
         }
 
-        _niceRefreshRunning = true;
+        if (!await _portalOperationGate.WaitAsync(0))
+        {
+            return;
+        }
+
+        _portalSessionCheckRunning = true;
+        UpdateConnectionControls();
         try
         {
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            _sessionCheckCancellationSource = new CancellationTokenSource(TimeSpan.FromSeconds(45));
             var controller = new PortalWorkflowController(_devToolsPort.Value, _ => { });
-            await controller.RefreshNiceAsync(cancellation.Token);
+            await controller.ExtendExpiringSessionsAsync(_sessionCheckCancellationSource.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            AppLogger.Info("SessionRefresh", "세션 자동 연장 확인이 취소되었거나 제한 시간을 넘었습니다.");
         }
         catch (Exception exception)
         {
-            AppLogger.Error("NiceRefresh", "나이스 자동 갱신 실패", exception);
+            AppLogger.Error("SessionRefresh", "세션 자동 연장 확인 실패", exception);
         }
         finally
         {
-            _niceRefreshRunning = false;
+            _sessionCheckCancellationSource?.Dispose();
+            _sessionCheckCancellationSource = null;
+            _portalSessionCheckRunning = false;
+            _portalOperationGate.Release();
+            if (!_isClosing && !IsDisposed && !Disposing)
+            {
+                UpdateConnectionControls();
+            }
         }
     }
 
@@ -729,7 +763,7 @@ public sealed class MainForm : Form
             _sourceTransparent = true;
         }
 
-        NativeMethods.ShowWindow(_sourceWindow, NativeMethods.SW_MAXIMIZE);
+        NativeMethods.ShowWindowAsync(_sourceWindow, NativeMethods.SW_MAXIMIZE);
     }
 
     private void ShowSourceWindowMaximized()
@@ -739,7 +773,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        NativeMethods.ShowWindow(_sourceWindow, NativeMethods.SW_MAXIMIZE);
+        NativeMethods.ShowWindowAsync(_sourceWindow, NativeMethods.SW_MAXIMIZE);
         RestoreSourceWindowOpacity();
         NativeMethods.SetForegroundWindow(_sourceWindow);
     }
@@ -751,7 +785,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        NativeMethods.ShowWindow(_sourceWindow, NativeMethods.SW_MINIMIZE);
+        NativeMethods.ShowWindowAsync(_sourceWindow, NativeMethods.SW_MINIMIZE);
         RestoreSourceWindowOpacity();
     }
 
@@ -770,13 +804,18 @@ public sealed class MainForm : Form
     private void DisconnectBrowser()
     {
         _workflowCancellationSource?.Cancel();
-        _niceRefreshTimer.Stop();
+        _sessionCheckCancellationSource?.Cancel();
+        _portalSessionTimer.Stop();
         RestoreSourceWindowOpacity();
+        _sourceTransparent = false;
         _sourceWindow = IntPtr.Zero;
         _connectedProcessName = null;
         _devToolsPort = null;
-        UpdateConnectionControls();
-        SetConnectionStatus("연결 안 됨");
+        if (!_isClosing && !IsDisposed && !Disposing)
+        {
+            UpdateConnectionControls();
+            SetConnectionStatus("연결 안 됨");
+        }
     }
 
     private void CheckSourceWindow()
@@ -788,9 +827,12 @@ public sealed class MainForm : Form
 
         if (!NativeMethods.IsWindow(_sourceWindow))
         {
-            _niceRefreshTimer.Stop();
+            _sessionCheckCancellationSource?.Cancel();
+            _portalSessionTimer.Stop();
             _sourceWindow = IntPtr.Zero;
+            _sourceTransparent = false;
             _connectedProcessName = null;
+            _devToolsPort = null;
             UpdateConnectionControls();
             SetConnectionStatus("연결 끊김");
         }
@@ -799,20 +841,21 @@ public sealed class MainForm : Form
     private void UpdateConnectionControls()
     {
         var connected = _sourceWindow != IntPtr.Zero;
+        var operationRunning = _workflowRunning;
         _connectButton.Visible = true;
         _connectButton.Text = connected ? "연결 해제" : "연결";
         _connectButton.AccessibleName = connected ? "브라우저 연결 해제" : "브라우저 연결";
         _connectButton.BackColor = connected ? Color.FromArgb(255, 239, 241) : Color.FromArgb(45, 162, 126);
         _connectButton.ForeColor = connected ? Color.FromArgb(160, 70, 82) : Color.White;
-        _connectButton.Enabled = !_workflowRunning;
-        _launchBrowserButton.Enabled = !_workflowRunning;
-        _refreshButton.Enabled = !_workflowRunning;
-        _browserWindows.Enabled = !connected && !_workflowRunning;
-        _settingsButton.Enabled = !_workflowRunning;
-        _closeButton.Enabled = !_workflowRunning;
+        _connectButton.Enabled = !operationRunning;
+        _launchBrowserButton.Enabled = !operationRunning;
+        _refreshButton.Enabled = !operationRunning;
+        _browserWindows.Enabled = !connected && !operationRunning;
+        _settingsButton.Enabled = !operationRunning;
+        _closeButton.Enabled = !operationRunning;
         foreach (var taskButton in _taskButtons)
         {
-            taskButton.Enabled = connected && _devToolsPort is not null && !_workflowRunning;
+            taskButton.Enabled = connected && _devToolsPort is not null && !operationRunning;
         }
     }
 
@@ -952,9 +995,6 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool ShowWindowAsync(IntPtr handle, int command);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool ShowWindow(IntPtr handle, int command);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int GetWindowLong(IntPtr handle, int index);
