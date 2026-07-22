@@ -87,6 +87,7 @@ internal sealed class PortalWorkflowController
     public async Task PrepareApplicationTargetsAsync(CancellationToken cancellationToken = default)
     {
         AppLogger.Info("Connection", "업무 시스템 준비 시작");
+        await CloseVisiblePortalNoticeAsync(cancellationToken);
 
         _reportProgress("나이스를 미리 여는 중");
         var niceTarget = await EnsureApplicationTargetAsync(
@@ -101,6 +102,7 @@ internal sealed class PortalWorkflowController
             cancellationToken))
         {
             await WaitForNiceReadyAsync(niceSession, cancellationToken);
+            await CloseVisibleNiceNoticeDialogAsync(niceSession, cancellationToken);
         }
         AppLogger.Info("Connection", "나이스 준비 완료");
 
@@ -345,6 +347,10 @@ internal sealed class PortalWorkflowController
             cancellationToken);
         await using var session = await DevToolsSession.ConnectAsync(_devToolsPort, target.Id, cancellationToken);
         await waitUntilReady(session, cancellationToken);
+        if (string.Equals(domain, _educationOffice.NiceDomain, StringComparison.OrdinalIgnoreCase))
+        {
+            await CloseVisibleNiceNoticeDialogAsync(session, cancellationToken);
+        }
         await PrepareBrowserForUserAsync(session, cancellationToken);
         return new WorkflowResult(
             $"{displayName} 화면을 열었습니다.",
@@ -368,6 +374,7 @@ internal sealed class PortalWorkflowController
         await WaitForNiceReadyAsync(session, cancellationToken);
         await session.ActivateTargetAsync(cancellationToken);
         await PrepareActivatedTargetForBackgroundAsync(cancellationToken);
+        await CloseVisibleNiceNoticeDialogAsync(session, cancellationToken);
 
         var openDialog = await GetVisibleNiceRequestDialogAsync(session, cancellationToken);
         if (string.Equals(openDialog, dialogTitle, StringComparison.Ordinal))
@@ -439,6 +446,12 @@ internal sealed class PortalWorkflowController
             cancellationToken,
             searchFrames: true);
         await Task.Delay(750, cancellationToken);
+
+        if (!EdgeIntegrationPolicy.IsWxsClientRegistered())
+        {
+            throw new InvalidOperationException(
+                "WXSClient가 설치되어 있지 않습니다. K-에듀파인 설치가이드에서 프로그램 설치를 완료해 주세요.");
+        }
 
         var existingWindows = BrowserWindowFinder
             .FindVisibleWindowsByProcess("WXSClient")
@@ -585,6 +598,164 @@ internal sealed class PortalWorkflowController
         throw new TimeoutException($"{displayName} 화면이 열리지 않았습니다. 로그인 또는 보안 프로그램 상태를 확인해 주세요.");
     }
 
+    private async Task CloseVisiblePortalNoticeAsync(CancellationToken cancellationToken)
+    {
+        var targets = await DevToolsDiscovery.GetTargetsAsync(_devToolsPort, cancellationToken);
+        var portalTargets = targets
+            .Where(target => target.Type == "page"
+                && target.Url.Contains(_educationOffice.PortalDomain, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        foreach (var target in portalTargets)
+        {
+            await using var session = await DevToolsSession.ConnectAsync(
+                _devToolsPort,
+                target.Id,
+                cancellationToken);
+            const string noticeVisibleExpression = """
+                (()=>{
+                  const normalize=value=>(value||'').replace(/\s+/g,' ').trim();
+                  const visible=element=>{
+                    if(!element)return false;
+                    const rect=element.getBoundingClientRect();
+                    const view=element.ownerDocument?.defaultView;
+                    const style=view?.getComputedStyle(element);
+                    return rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0
+                      &&style?.display!=='none'&&style?.visibility!=='hidden';
+                  };
+                  const documents=[];
+                  const visit=currentDocument=>{
+                    if(!currentDocument||documents.includes(currentDocument))return;
+                    documents.push(currentDocument);
+                    for(const frame of currentDocument.querySelectorAll('iframe,frame')){
+                      try{visit(frame.contentDocument);}catch{}
+                    }
+                  };
+                  visit(document);
+                  return documents.some(currentDocument=>{
+                    const elements=[...currentDocument.querySelectorAll('label,span,div,p')];
+                    const day=elements.some(element=>visible(element)&&normalize(element.textContent).includes('오늘하루 이창 열지 않기'));
+                    const week=elements.some(element=>visible(element)&&normalize(element.textContent).includes('1주일동안 열지 않기'));
+                    return day&&week;
+                  });
+                })()
+                """;
+            if (!await session.EvaluateBooleanAsync(
+                    noticeVisibleExpression,
+                    cancellationToken: cancellationToken))
+            {
+                continue;
+            }
+
+            AppLogger.Info("Workflow", "업무포털 공지창을 확인했습니다.");
+            const string selectWeekExpression = """
+                (()=>{
+                  const normalize=value=>(value||'').replace(/\s+/g,' ').trim();
+                  const visible=element=>{
+                    if(!element)return false;
+                    const rect=element.getBoundingClientRect();
+                    const view=element.ownerDocument?.defaultView;
+                    const style=view?.getComputedStyle(element);
+                    return rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0
+                      &&style?.display!=='none'&&style?.visibility!=='hidden';
+                  };
+                  const visit=currentDocument=>{
+                    const elements=[...currentDocument.querySelectorAll('label,span,div,p')];
+                    const week=elements
+                      .filter(element=>visible(element)&&normalize(element.textContent).includes('1주일동안 열지 않기'))
+                      .sort((left,right)=>left.children.length-right.children.length)[0];
+                    if(week){
+                      const label=week.closest('label');
+                      const container=label||week.parentElement;
+                      const checkbox=label?.querySelector('input[type="checkbox"]')
+                        ||container?.querySelector('input[type="checkbox"],[role="checkbox"],.cl-checkbox');
+                      if(checkbox){
+                        const checked=checkbox.checked===true||checkbox.getAttribute?.('aria-checked')==='true'
+                          ||checkbox.classList?.contains('cl-checked');
+                        if(!checked)checkbox.click();
+                      }else{
+                        (week.closest('label,[role="checkbox"],.cl-checkbox')||week).click();
+                      }
+                      return true;
+                    }
+                    for(const frame of currentDocument.querySelectorAll('iframe,frame')){
+                      try{if(frame.contentDocument&&visit(frame.contentDocument))return true;}catch{}
+                    }
+                    return false;
+                  };
+                  return visit(document);
+                })()
+                """;
+            var weekSelected = await session.EvaluateBooleanAsync(
+                selectWeekExpression,
+                userGesture: true,
+                cancellationToken);
+            if (!weekSelected)
+            {
+                AppLogger.Info("Workflow", "업무포털 공지창의 1주일 숨김 선택 항목을 찾지 못했습니다.");
+            }
+
+            await Task.Delay(150, cancellationToken);
+            const string closeNoticeExpression = """
+                (()=>{
+                  const normalize=value=>(value||'').replace(/\s+/g,' ').trim();
+                  const visible=element=>{
+                    if(!element)return false;
+                    const rect=element.getBoundingClientRect();
+                    const view=element.ownerDocument?.defaultView;
+                    const style=view?.getComputedStyle(element);
+                    return rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0
+                      &&style?.display!=='none'&&style?.visibility!=='hidden';
+                  };
+                  const visit=currentDocument=>{
+                    const elements=[...currentDocument.querySelectorAll('label,span,div,p')];
+                    const week=elements
+                      .filter(element=>visible(element)&&normalize(element.textContent).includes('1주일동안 열지 않기'))
+                      .sort((left,right)=>left.children.length-right.children.length)[0];
+                    if(week){
+                      let scope=week.closest('[role="dialog"],.modal,[class*="popup"],[class*="layer"]');
+                      if(!scope){
+                        for(let current=week.parentElement;current;current=current.parentElement){
+                          const text=normalize(current.innerText||current.textContent);
+                          if(text.includes('오늘하루 이창 열지 않기')&&text.includes('1주일동안 열지 않기')
+                            &&text.includes('닫기')){scope=current;break;}
+                        }
+                      }
+                      scope=scope||currentDocument.body;
+                      const close=[...scope.querySelectorAll('button,a,[role="button"],span,div')]
+                        .filter(element=>visible(element)&&normalize(element.innerText||element.textContent)==='닫기')
+                        .sort((left,right)=>left.children.length-right.children.length)[0];
+                      if(!close)return false;
+                      (close.closest('button,a,[role="button"]')||close).click();
+                      return true;
+                    }
+                    for(const frame of currentDocument.querySelectorAll('iframe,frame')){
+                      try{if(frame.contentDocument&&visit(frame.contentDocument))return true;}catch{}
+                    }
+                    return false;
+                  };
+                  return visit(document);
+                })()
+                """;
+            if (!await session.EvaluateBooleanAsync(
+                    closeNoticeExpression,
+                    userGesture: true,
+                    cancellationToken))
+            {
+                throw new InvalidOperationException("업무포털 공지창의 닫기 버튼을 찾지 못했습니다.");
+            }
+
+            await WaitForConditionAsync(
+                session,
+                $"!({noticeVisibleExpression})",
+                TimeSpan.FromSeconds(10),
+                cancellationToken,
+                "업무포털 공지창이 닫히는 시간이 초과되었습니다.");
+            AppLogger.Info("Workflow", weekSelected
+                ? "업무포털 공지창을 1주일 동안 표시하지 않도록 닫았습니다."
+                : "업무포털 공지창을 닫았습니다.");
+        }
+    }
+
     private async Task<DevToolsTarget?> WaitForApplicationTargetAsync(
         string domain,
         TimeSpan timeout,
@@ -645,6 +816,136 @@ internal sealed class PortalWorkflowController
             TimeSpan.FromSeconds(45),
             cancellationToken,
             "K-에듀파인 업무 화면을 준비하는 시간이 초과되었습니다.");
+    }
+
+    private static async Task CloseVisibleNiceNoticeDialogAsync(
+        DevToolsSession session,
+        CancellationToken cancellationToken)
+    {
+        const string noticeVisibleExpression = """
+            (()=>{
+              const normalize=value=>(value||'').replace(/\s+/g,' ').trim();
+              const visible=element=>{
+                if(!element)return false;
+                const rect=element.getBoundingClientRect();
+                const view=element.ownerDocument?.defaultView;
+                const style=view?.getComputedStyle(element);
+                return rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0
+                  &&style?.display!=='none'&&style?.visibility!=='hidden';
+              };
+              const documents=[];
+              const visit=currentDocument=>{
+                if(!currentDocument||documents.includes(currentDocument))return;
+                documents.push(currentDocument);
+                for(const frame of currentDocument.querySelectorAll('iframe,frame')){
+                  try{visit(frame.contentDocument);}catch{}
+                }
+              };
+              visit(document);
+              return documents.some(currentDocument=>{
+                const dialogs=[...currentDocument.querySelectorAll('.cl-dialog,[role="dialog"],.modal,[class*="popup"]')];
+                if(dialogs.some(dialog=>{
+                  const text=normalize(dialog.innerText||dialog.textContent);
+                  return visible(dialog)&&text.includes('공지사항')&&text.includes('전달사항내용조회');
+                }))return true;
+                const elements=[...currentDocument.querySelectorAll('.cl-text,h1,h2,h3,span,div')];
+                const noticeTitle=elements.some(element=>visible(element)&&normalize(element.textContent)==='공지사항');
+                const detailTitle=elements.some(element=>visible(element)&&normalize(element.textContent)==='전달사항내용조회');
+                return noticeTitle&&detailTitle;
+              });
+            })()
+            """;
+
+        if (!await session.EvaluateBooleanAsync(
+                noticeVisibleExpression,
+                cancellationToken: cancellationToken))
+        {
+            return;
+        }
+
+        AppLogger.Info("Workflow", "나이스 공지사항 안내창을 확인했습니다.");
+        const string closeElementExpression = """
+            (()=>{
+              const normalize=value=>(value||'').replace(/\s+/g,' ').trim();
+              const visible=element=>{
+                if(!element)return false;
+                const rect=element.getBoundingClientRect();
+                const view=element.ownerDocument?.defaultView;
+                const style=view?.getComputedStyle(element);
+                return rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0
+                  &&style?.display!=='none'&&style?.visibility!=='hidden'
+                  &&!element.disabled&&element.getAttribute?.('aria-disabled')!=='true';
+              };
+              const documents=[];
+              const visit=currentDocument=>{
+                if(!currentDocument||documents.includes(currentDocument))return;
+                documents.push(currentDocument);
+                for(const frame of currentDocument.querySelectorAll('iframe,frame')){
+                  try{visit(frame.contentDocument);}catch{}
+                }
+              };
+              visit(document);
+              for(const currentDocument of documents){
+                const dialogs=[...currentDocument.querySelectorAll('.cl-dialog,[role="dialog"],.modal,[class*="popup"]')];
+                let scope=dialogs.find(dialog=>{
+                  const text=normalize(dialog.innerText||dialog.textContent);
+                  return visible(dialog)&&text.includes('공지사항')&&text.includes('전달사항내용조회');
+                });
+                if(!scope){
+                  const elements=[...currentDocument.querySelectorAll('.cl-text,h1,h2,h3,span,div')];
+                  const noticeTitle=elements.find(element=>visible(element)&&normalize(element.textContent)==='공지사항');
+                  const detailTitle=elements.find(element=>visible(element)&&normalize(element.textContent)==='전달사항내용조회');
+                  if(!noticeTitle||!detailTitle)continue;
+                  scope=noticeTitle.closest('.cl-dialog,[role="dialog"],.modal,[class*="popup"]')||currentDocument.body;
+                }
+                const actions=[...scope.querySelectorAll('.cl-button,button,a,[role="button"],input[type="button"],input[type="submit"],.cl-dialog-close')]
+                  .filter(visible);
+                return actions.find(action=>normalize(action.innerText||action.textContent||action.value)==='닫기')
+                  ||actions.find(action=>action.classList?.contains('cl-dialog-close'))
+                  ||actions.find(action=>/^(닫기|close)$/i.test(normalize(action.getAttribute?.('aria-label')||action.title)))
+                  ||null;
+              }
+              return null;
+            })()
+            """;
+
+        var syntheticClickExpression = "(()=>{const element=(" + closeElementExpression
+            + ");if(!element)return false;element.click();return true;})()";
+        if (await session.EvaluateBooleanAsync(
+                syntheticClickExpression,
+                userGesture: true,
+                cancellationToken))
+        {
+            try
+            {
+                await WaitForConditionAsync(
+                    session,
+                    $"!({noticeVisibleExpression})",
+                    TimeSpan.FromSeconds(2),
+                    cancellationToken,
+                    "나이스 공지사항 안내창의 DOM 닫기를 재시도합니다.");
+                AppLogger.Info("Workflow", "나이스 공지사항 안내창을 닫았습니다.");
+                return;
+            }
+            catch (TimeoutException)
+            {
+                AppLogger.Info("Workflow", "나이스 공지사항 안내창을 실제 마우스 입력으로 다시 닫습니다.");
+            }
+        }
+
+        await ClickElementCenterAsync(
+            session,
+            closeElementExpression,
+            "나이스 공지사항 안내창의 닫기 버튼을 찾지 못했습니다.",
+            TimeSpan.FromSeconds(5),
+            cancellationToken);
+        await WaitForConditionAsync(
+            session,
+            $"!({noticeVisibleExpression})",
+            TimeSpan.FromSeconds(10),
+            cancellationToken,
+            "나이스 공지사항 안내창이 닫히는 시간이 초과되었습니다.");
+        AppLogger.Info("Workflow", "나이스 공지사항 안내창을 닫았습니다.");
     }
 
     private static async Task EnsureNiceDutyMenuExpandedAsync(
@@ -837,7 +1138,9 @@ internal sealed class PortalWorkflowController
         CancellationToken cancellationToken)
     {
         var rectExpression = "(()=>{const e=(" + elementExpression + ");if(!e)return null;"
-            + "const r=e.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height};})()";
+            + "const r=e.getBoundingClientRect();let x=r.x,y=r.y;let view=e.ownerDocument?.defaultView;"
+            + "while(view&&view!==window){const frame=view.frameElement;if(!frame)break;const fr=frame.getBoundingClientRect();"
+            + "x+=fr.x;y+=fr.y;view=frame.ownerDocument?.defaultView;}return {x,y,w:r.width,h:r.height};})()";
         var deadline = DateTime.UtcNow + timeout;
         Exception? lastException = null;
         while (DateTime.UtcNow < deadline)

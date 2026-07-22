@@ -589,10 +589,7 @@ public sealed class MainForm : Form
                 throw new FileNotFoundException("Microsoft Edge 실행 파일을 찾지 못했습니다.");
             }
 
-            var profilePath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "OneClickPortal",
-                "EdgeAnalysisProfile");
+            var profilePath = EdgeIntegrationPolicy.ControlledProfilePath;
             Directory.CreateDirectory(profilePath);
 
             var startInfo = new ProcessStartInfo
@@ -606,6 +603,7 @@ public sealed class MainForm : Form
             startInfo.ArgumentList.Add("--start-maximized");
             startInfo.ArgumentList.Add("--new-window");
             var educationOffice = EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode());
+            EdgeIntegrationPolicy.PrepareControlledProfile(educationOffice);
             startInfo.ArgumentList.Add(educationOffice.PortalUri.AbsoluteUri);
             Process.Start(startInfo);
 
@@ -648,9 +646,10 @@ public sealed class MainForm : Form
             await _portalOperationGate.WaitAsync(_workflowCancellationSource.Token);
             gateAcquired = true;
             MakeSourceWindowTransparent();
+            var educationOffice = EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode());
             var controller = new PortalWorkflowController(
                 _devToolsPort.Value,
-                EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode()),
+                educationOffice,
                 message =>
                 {
                     AppLogger.Info("Progress", message);

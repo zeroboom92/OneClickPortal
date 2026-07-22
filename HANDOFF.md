@@ -27,6 +27,10 @@
 - 사용하지 않는 함수 컨테이너 이미지는 7일 후 자동 삭제하도록 Artifact Registry 정리 정책 설정
 - 설정창에 현재 버전과 저작권 문구 표시
 - 브라우저 연결 시 업무포털에서 `나이스`와 `에듀파인` 문구를 포함한 클릭 가능 요소를 찾아 두 시스템을 미리 열고 준비 상태를 확인한 뒤 Edge를 최소화
+- 나이스 최초 진입 시 `공지사항`·`전달사항내용조회` 안내창이 표시되면 하단 `닫기` 또는 우측 상단 닫기 버튼을 찾아 닫은 뒤 업무 이동을 계속
+- 업무포털 공지 레이어가 표시되면 `1주일동안 열지 않기`를 선택하고 닫은 뒤 나이스·K-에듀파인 준비를 계속
+- 전용 Edge 프로필에서 선택한 교육청의 K-에듀파인 주소와 `wxsclient` 조합을 브라우저의 `항상 허용`과 동일하게 미리 저장
+- 전용 Edge 프로필에 `local_network`·`loopback_network` 사이트 권한을 미리 저장하고 WXSClient 프로토콜 설치 상태를 기안 실행 전에 확인
 - 업무포털에서 항목을 찾지 못하거나 새 탭이 열리지 않으면 선택한 교육청의 공식 나이스·K-에듀파인 URL을 새 탭으로 여는 방식으로 대체
 - 나이스 및 K-에듀파인 탭 자동 탐색
 - 상태 기반 업무 화면 이동
@@ -47,13 +51,14 @@
 - `MainForm.cs`: 가로형 UI, 브라우저 창 연결, 워크플로우 실행 및 원본 창 복원
 - `SettingsForm.cs`: 시작 실행, 세션 자동 연장, 투명도, 현재 사용자 수, 버전·저작권 설정창
 - `EducationOffice.cs`: 17개 시도교육청 코드와 업무포털·나이스·K-에듀파인·EVPN 주소 규칙
+- `EdgeIntegrationPolicy.cs`: 전용 Edge 프로필에 선택한 K-에듀파인 주소의 WXSClient 실행 허용을 안전하게 병합하고 설치 상태 확인
 - `DevToolsAutomation.cs`: 로컬 Edge DevTools 검색, 탭 연결, DOM 명령과 실제 마우스·키 입력 전달
 - `PortalWorkflowController.cs`: 복무·출장·기안·품의 상태 기반 이동 절차
 - `Program.cs`: Windows Forms 진입점
 - `UsageTelemetry.cs`: 업무 흐름을 막지 않는 일 1회 통계와 오전 시간대 현재 사용자 신호 전송·조회
 - `functions/`: Firebase HTTP Function 및 입력 검증 테스트
 - `firebase.json`, `firestore.rules`: Firebase 배포 설정과 클라이언트 접근 차단 규칙
-- `BrowserThumbnailPrototype.csproj`: .NET 8 Windows Forms 설정, 실행 파일명 `OneClickPortal`, 현재 버전 `0.1.5`
+- `BrowserThumbnailPrototype.csproj`: .NET 8 Windows Forms 설정, 실행 파일명 `OneClickPortal`, 현재 버전 `0.1.6`
 - `README.md`: 사용자 실행 및 사용 방법
 
 ## 검증 결과
@@ -99,3 +104,4 @@ dotnet build .\BrowserThumbnailPrototype.csproj --configuration Debug
 - 사용 통계에는 익명 설치 해시와 앱 버전만 저장하며, 실패해도 사용자 실행을 막지 않습니다.
 - 익명 설치 수는 계정 기반 사용자 수가 아니므로 여러 PC·레지스트리 초기화·위조 요청에 따른 오차가 있을 수 있습니다.
 - 최종 상신 계열 버튼은 자동화 범위에 넣지 않습니다.
+- WXSClient 실행 허용은 시스템 전체 Edge 정책을 변경하지 않고 `%LOCALAPPDATA%\OneClickPortal\EdgeAnalysisProfile\Default\Preferences`의 해당 원본 주소에만 추가합니다.
