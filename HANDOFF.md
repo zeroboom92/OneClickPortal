@@ -28,6 +28,7 @@
 - 설정창에 현재 버전과 저작권 문구 표시
 - 브라우저 연결 시 업무포털에서 `나이스`와 `에듀파인` 문구를 포함한 클릭 가능 요소를 찾아 두 시스템을 미리 열고 준비 상태를 확인한 뒤 Edge를 최소화
 - 나이스 최초 진입 시 `공지사항`·`전달사항내용조회` 안내창이 표시되면 하단 `닫기` 또는 우측 상단 닫기 버튼을 찾아 닫은 뒤 업무 이동을 계속
+- 업무포털·나이스 공지창 자동 닫기는 선택적 보조 단계이며 탐색·클릭·닫힘 확인 실패가 전체 업무 준비를 중단하지 않음
 - 업무포털 공지 레이어가 표시되면 `1주일동안 열지 않기`를 선택하고 닫은 뒤 나이스·K-에듀파인 준비를 계속
 - 전용 Edge 프로필에서 선택한 교육청의 K-에듀파인 주소와 `wxsclient` 조합을 브라우저의 `항상 허용`과 동일하게 미리 저장
 - 전용 Edge 프로필에 `local_network`·`loopback_network` 사이트 권한을 미리 저장하고 WXSClient 프로토콜 설치 상태를 기안 실행 전에 확인
@@ -58,7 +59,7 @@
 - `UsageTelemetry.cs`: 업무 흐름을 막지 않는 일 1회 통계와 오전 시간대 현재 사용자 신호 전송·조회
 - `functions/`: Firebase HTTP Function 및 입력 검증 테스트
 - `firebase.json`, `firestore.rules`: Firebase 배포 설정과 클라이언트 접근 차단 규칙
-- `BrowserThumbnailPrototype.csproj`: .NET 8 Windows Forms 설정, 실행 파일명 `OneClickPortal`, 현재 버전 `0.1.7`
+- `BrowserThumbnailPrototype.csproj`: .NET 8 Windows Forms 설정, 실행 파일명 `OneClickPortal`, 현재 버전 `0.1.8`
 - `README.md`: 사용자 실행 및 사용 방법
 
 ## 검증 결과

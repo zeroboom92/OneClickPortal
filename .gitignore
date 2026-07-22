@@ -2,6 +2,7 @@ bin/
 obj/
 .vs/
 publish/
+publish-test-*/
 Releases/
 .tools/
 tmp/

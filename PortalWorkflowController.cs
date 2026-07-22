@@ -87,7 +87,7 @@ internal sealed class PortalWorkflowController
     public async Task PrepareApplicationTargetsAsync(CancellationToken cancellationToken = default)
     {
         AppLogger.Info("Connection", "업무 시스템 준비 시작");
-        await CloseVisiblePortalNoticeAsync(cancellationToken);
+        await TryCloseVisiblePortalNoticeAsync(cancellationToken);
 
         _reportProgress("나이스를 미리 여는 중");
         var niceTarget = await EnsureApplicationTargetAsync(
@@ -102,7 +102,7 @@ internal sealed class PortalWorkflowController
             cancellationToken))
         {
             await WaitForNiceReadyAsync(niceSession, cancellationToken);
-            await CloseVisibleNiceNoticeDialogAsync(niceSession, cancellationToken);
+            await TryCloseVisibleNiceNoticeDialogAsync(niceSession, cancellationToken);
         }
         AppLogger.Info("Connection", "나이스 준비 완료");
 
@@ -349,7 +349,7 @@ internal sealed class PortalWorkflowController
         await waitUntilReady(session, cancellationToken);
         if (string.Equals(domain, _educationOffice.NiceDomain, StringComparison.OrdinalIgnoreCase))
         {
-            await CloseVisibleNiceNoticeDialogAsync(session, cancellationToken);
+            await TryCloseVisibleNiceNoticeDialogAsync(session, cancellationToken);
         }
         await PrepareBrowserForUserAsync(session, cancellationToken);
         return new WorkflowResult(
@@ -374,7 +374,7 @@ internal sealed class PortalWorkflowController
         await WaitForNiceReadyAsync(session, cancellationToken);
         await session.ActivateTargetAsync(cancellationToken);
         await PrepareActivatedTargetForBackgroundAsync(cancellationToken);
-        await CloseVisibleNiceNoticeDialogAsync(session, cancellationToken);
+        await TryCloseVisibleNiceNoticeDialogAsync(session, cancellationToken);
 
         var openDialog = await GetVisibleNiceRequestDialogAsync(session, cancellationToken);
         if (string.Equals(openDialog, dialogTitle, StringComparison.Ordinal))
@@ -598,6 +598,24 @@ internal sealed class PortalWorkflowController
         throw new TimeoutException($"{displayName} 화면이 열리지 않았습니다. 로그인 또는 보안 프로그램 상태를 확인해 주세요.");
     }
 
+    private async Task TryCloseVisiblePortalNoticeAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await CloseVisiblePortalNoticeAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            AppLogger.Info(
+                "Workflow",
+                $"업무포털 공지창 자동 닫기를 건너뛰고 다음 단계로 진행합니다: {exception.Message}");
+        }
+    }
+
     private async Task CloseVisiblePortalNoticeAsync(CancellationToken cancellationToken)
     {
         var targets = await DevToolsDiscovery.GetTargetsAsync(_devToolsPort, cancellationToken);
@@ -741,18 +759,28 @@ internal sealed class PortalWorkflowController
                     userGesture: true,
                     cancellationToken))
             {
-                throw new InvalidOperationException("업무포털 공지창의 닫기 버튼을 찾지 못했습니다.");
+                AppLogger.Info(
+                    "Workflow",
+                    "업무포털 공지창의 닫기 버튼을 찾지 못해 자동 닫기를 건너뜁니다.");
+                continue;
             }
 
-            await WaitForConditionAsync(
-                session,
-                $"!({noticeVisibleExpression})",
-                TimeSpan.FromSeconds(10),
-                cancellationToken,
-                "업무포털 공지창이 닫히는 시간이 초과되었습니다.");
-            AppLogger.Info("Workflow", weekSelected
-                ? "업무포털 공지창을 1주일 동안 표시하지 않도록 닫았습니다."
-                : "업무포털 공지창을 닫았습니다.");
+            await Task.Delay(300, cancellationToken);
+            var noticeStillVisible = await session.EvaluateBooleanAsync(
+                noticeVisibleExpression,
+                cancellationToken: cancellationToken);
+            if (noticeStillVisible)
+            {
+                AppLogger.Info(
+                    "Workflow",
+                    "업무포털 공지창이 바로 닫히지 않아 기다리지 않고 다음 단계로 진행합니다.");
+            }
+            else
+            {
+                AppLogger.Info("Workflow", weekSelected
+                    ? "업무포털 공지창을 1주일 동안 표시하지 않도록 닫았습니다."
+                    : "업무포털 공지창을 닫았습니다.");
+            }
         }
     }
 
@@ -816,6 +844,26 @@ internal sealed class PortalWorkflowController
             TimeSpan.FromSeconds(45),
             cancellationToken,
             "K-에듀파인 업무 화면을 준비하는 시간이 초과되었습니다.");
+    }
+
+    private static async Task TryCloseVisibleNiceNoticeDialogAsync(
+        DevToolsSession session,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await CloseVisibleNiceNoticeDialogAsync(session, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            AppLogger.Info(
+                "Workflow",
+                $"나이스 공지사항 자동 닫기를 건너뛰고 다음 단계로 진행합니다: {exception.Message}");
+        }
     }
 
     private static async Task CloseVisibleNiceNoticeDialogAsync(
