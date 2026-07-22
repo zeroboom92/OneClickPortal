@@ -36,7 +36,7 @@ internal static class EducationOfficeCatalog
         new("전북", "jbe"),
         new("충남", "cne"),
         new("충북", "cbe"),
-        new("강원", "kwe"),
+        new("강원", "gwe"),
         new("제주", "jje"),
     ]);
 
