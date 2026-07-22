@@ -14,7 +14,7 @@
 - 전용 Edge 프로필 실행과 로컬 DevTools 연결 확인
 - 상단 `로그인` 버튼으로 전용 Edge를 실행하고 연결 후 `열기` 버튼으로 브라우저를 표시
 - 설정창에서 Windows 시작 시 자동 실행, 나이스·K-에듀파인 세션 자동 연장, 프로그램 투명도 설정 저장
-- 설정창에서 17개 시도교육청을 선택하며 로그인·나이스·K-에듀파인 주소에 동일하게 적용
+- 설정창에서 17개 시도교육청을 선택하며 로그인·나이스·K-에듀파인 주소에 동일하게 적용. 비바인딩 선택 목록과 저장 후 재검증으로 재실행 시 선택값 유지
 - 설정창에서 `프로그램을 항상 위에 표시`를 선택할 수 있고 기본값은 꺼짐
 - 설정창에서 로그인 없는 익명 사용 통계 전송을 켜거나 끌 수 있음
 - 프로그램 실행 시 무작위 로컬 설치 식별자의 SHA-256 해시와 앱 버전을 하루 한 번 Firebase로 전송
@@ -58,7 +58,7 @@
 - `UsageTelemetry.cs`: 업무 흐름을 막지 않는 일 1회 통계와 오전 시간대 현재 사용자 신호 전송·조회
 - `functions/`: Firebase HTTP Function 및 입력 검증 테스트
 - `firebase.json`, `firestore.rules`: Firebase 배포 설정과 클라이언트 접근 차단 규칙
-- `BrowserThumbnailPrototype.csproj`: .NET 8 Windows Forms 설정, 실행 파일명 `OneClickPortal`, 현재 버전 `0.1.6`
+- `BrowserThumbnailPrototype.csproj`: .NET 8 Windows Forms 설정, 실행 파일명 `OneClickPortal`, 현재 버전 `0.1.7`
 - `README.md`: 사용자 실행 및 사용 방법
 
 ## 검증 결과

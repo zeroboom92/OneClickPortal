@@ -350,11 +350,17 @@ public sealed class MainForm : Form
                 previousEducationOfficeCode,
                 dialog.EducationOfficeCode,
                 StringComparison.OrdinalIgnoreCase);
+            AppPreferences.SetEducationOfficeCode(dialog.EducationOfficeCode);
+            var savedEducationOfficeCode = AppPreferences.GetEducationOfficeCode();
+            if (!string.Equals(savedEducationOfficeCode, dialog.EducationOfficeCode, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("소속 교육청 설정이 올바르게 저장되지 않았습니다.");
+            }
+
             AppPreferences.SetWindowsStartupEnabled(dialog.WindowsStartupEnabled);
             AppPreferences.SetPortalAutoRefreshEnabled(dialog.PortalAutoRefreshEnabled);
             AppPreferences.SetUsageTelemetryEnabled(dialog.UsageTelemetryEnabled);
             AppPreferences.SetAlwaysOnTopEnabled(dialog.AlwaysOnTopEnabled);
-            AppPreferences.SetEducationOfficeCode(dialog.EducationOfficeCode);
             AppPreferences.SetWindowOpacityPercent(dialog.WindowOpacityPercent);
             ApplyWindowOpacity();
             TopMost = dialog.AlwaysOnTopEnabled;
@@ -368,7 +374,7 @@ public sealed class MainForm : Form
             {
                 SetStatus("설정을 저장했습니다.");
             }
-            AppLogger.Info("Preferences", "설정을 저장했습니다.");
+            AppLogger.Info("Preferences", $"설정을 저장했습니다. 교육청={savedEducationOfficeCode}");
         }
         catch (Exception exception)
         {

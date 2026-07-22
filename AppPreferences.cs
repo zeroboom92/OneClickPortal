@@ -77,6 +77,7 @@ internal static class AppPreferences
         using var key = Registry.CurrentUser.CreateSubKey(SettingsKeyPath, writable: true)
             ?? throw new InvalidOperationException("소속 교육청 설정을 저장하지 못했습니다.");
         key.SetValue(EducationOfficeValueName, educationOffice.Code, RegistryValueKind.String);
+        key.Flush();
     }
 
     public static bool IsAlwaysOnTopEnabled()

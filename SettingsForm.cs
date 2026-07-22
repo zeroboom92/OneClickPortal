@@ -71,7 +71,10 @@ internal sealed class SettingsForm : Form
         _educationOfficeComboBox.Location = new Point(106, 11);
         _educationOfficeComboBox.Size = new Size(230, 25);
         _educationOfficeComboBox.DisplayMember = nameof(EducationOffice.Name);
-        _educationOfficeComboBox.DataSource = EducationOfficeCatalog.All.ToList();
+        foreach (var educationOffice in EducationOfficeCatalog.All)
+        {
+            _educationOfficeComboBox.Items.Add(educationOffice);
+        }
         _educationOfficeComboBox.SelectedItem = EducationOfficeCatalog.GetByCode(educationOfficeCode);
         optionsPanel.Controls.Add(_educationOfficeComboBox);
 
