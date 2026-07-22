@@ -140,6 +140,7 @@ internal sealed class PortalWorkflowController
         string domain,
         CancellationToken cancellationToken)
     {
+        var isNice = string.Equals(domain, _educationOffice.NiceDomain, StringComparison.OrdinalIgnoreCase);
         var target = FindPageTarget(targets, domain);
         if (target is null)
         {
@@ -182,7 +183,28 @@ internal sealed class PortalWorkflowController
             }
 
             LastSessionExtensionAttemptUtc[domain] = DateTime.UtcNow;
-            await session.ClickAsync(snapshot.ExtensionControlX!.Value, snapshot.ExtensionControlY!.Value, cancellationToken);
+            var niceCategoryClickDispatched = false;
+            if (isNice)
+            {
+                niceCategoryClickDispatched = await session.EvaluateBooleanAsync(
+                    NiceSessionExtensionClickScript(),
+                    userGesture: true,
+                    cancellationToken);
+                if (!niceCategoryClickDispatched)
+                {
+                    AppLogger.Info(
+                        "SessionRefresh",
+                        "나이스: 선택된 카테고리 버튼이 바뀌어 세션 연장 클릭을 안전하게 건너뜁니다.");
+                    return;
+                }
+            }
+            else
+            {
+                await session.ClickAsync(
+                    snapshot.ExtensionControlX!.Value,
+                    snapshot.ExtensionControlY!.Value,
+                    cancellationToken);
+            }
 
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(8);
             while (DateTime.UtcNow < deadline)
@@ -195,6 +217,15 @@ internal sealed class PortalWorkflowController
                     AppLogger.Info("SessionRefresh", $"{systemName}: 세션을 연장했습니다.");
                     return;
                 }
+            }
+
+            if (isNice && niceCategoryClickDispatched)
+            {
+                AppLogger.Info(
+                    "SessionRefresh",
+                    "나이스: 선택된 카테고리를 다시 눌러 세션 연장을 요청했습니다. "
+                    + "백그라운드 탭의 시간 표시는 탭을 다시 열 때 갱신됩니다.");
+                return;
             }
 
             AppLogger.Info(
@@ -253,8 +284,10 @@ internal sealed class PortalWorkflowController
                 return r.width>0&&r.height>0&&r.x>=0&&r.y>=0&&s.display!=='none'&&s.visibility!=='hidden'
                   &&!e.disabled&&e.getAttribute?.('aria-disabled')!=='true';
               };
-              const text=e=>((e.innerText||e.textContent||e.value||e.getAttribute?.('aria-label')||e.title||'')+'').trim();
-              const timeKeyword=/(남은\s*시간|세션\s*만료|세션\s*남은|자동\s*로그아웃|로그아웃\s*예정)/;
+              const text=e=>((e.innerText||e.textContent||e.value||'')+'').trim();
+              const searchableText=e=>[text(e),e.getAttribute?.('aria-label')||'',e.title||'']
+                .filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+              const timeKeyword=/(남은\s*시간|잔여\s*시간|세션\s*(?:만료|종료|남은)|자동\s*로그아웃|로그아웃\s*(?:예정|잔여시간))/;
               const extensionText=/^(연장|연장하기|시간\s*연장|세션\s*연장|로그인\s*연장|접속\s*연장)$/;
               const parseSeconds=value=>{
                 const korean=value.match(/(\d{1,3})\s*분(?:\s*(\d{1,2})\s*초)?/);
@@ -266,37 +299,60 @@ internal sealed class PortalWorkflowController
                 return two&&Number(two[2])<60?Number(two[1])*60+Number(two[2]):null;
               };
               const rawTimers=[];
-              for(const e of document.querySelectorAll('span,div,p,label')){
+
+              // K-에듀파인(cpr)과 나이스의 실제 세션 컨트롤을 우선 사용한다.
+              // 두 시스템 모두 화면 문자열보다 생성된 컨트롤 ID가 안정적이다.
+              const officialTimers=[
+                ...document.querySelectorAll("[id$='staUseTime'],[id$='optTime'],[aria-label='세션 종료 시간']")
+              ];
+              for(const e of new Set(officialTimers)){
                 if(!visible(e))continue;
-                const value=text(e).replace(/\s+/g,' ');
-                if(value.length>0&&value.length<=180&&timeKeyword.test(value)){
-                  const seconds=parseSeconds(value);
-                  if(seconds!==null)rawTimers.push({e,seconds});
+                const value=searchableText(e);
+                const seconds=parseSeconds(value);
+                if(seconds!==null)rawTimers.push({e,seconds,official:true});
+              }
+
+              if(rawTimers.length===0){
+                for(const e of document.querySelectorAll('output,span,div,p,label')){
+                  if(!visible(e))continue;
+                  const value=searchableText(e);
+                  if(value.length>0&&value.length<=180&&timeKeyword.test(value)){
+                    const seconds=parseSeconds(value);
+                    if(seconds!==null)rawTimers.push({e,seconds,official:false});
+                  }
                 }
               }
-              const timerCandidates=rawTimers.filter(candidate=>
-                !rawTimers.some(other=>other!==candidate&&candidate.e.contains(other.e)));
+
+              const timerCandidates=rawTimers.some(candidate=>candidate.official)
+                ? rawTimers.filter(candidate=>candidate.official)
+                : rawTimers.filter(candidate=>
+                    !rawTimers.some(other=>other!==candidate&&candidate.e.contains(other.e)));
               let extensionControl=null;
               let extensionControlCount=0;
               if(timerCandidates.length===1){
-                const timer=timerCandidates[0].e;
-                let container=timer;
-                for(let depth=0;container&&depth<2;depth++,container=container.parentElement){
-                  if(container===document.body||container===document.documentElement)break;
-                  const containerText=text(container).replace(/\s+/g,' ');
-                  if(containerText.length>500)break;
-                  const controls=[...new Set([...container.querySelectorAll(
+                const officialNiceControl=[...document.querySelectorAll('.btn-asd.selected')]
+                  .filter(e=>{
+                    if(!visible(e))return false;
+                    const r=e.getBoundingClientRect();
+                    const atScreenEdge=r.x<90||r.right>innerWidth-90;
+                    return atScreenEdge&&r.width<=60&&r.height<=60;
+                  });
+                const officialEdufineControl=[...document.querySelectorAll("[id$='btnUseTimeExtn']")]
+                  .filter(visible);
+                if(officialNiceControl.length===1){
+                  extensionControl=officialNiceControl[0];
+                  extensionControlCount=1;
+                }else if(officialEdufineControl.length===1){
+                  extensionControl=officialEdufineControl[0];
+                  extensionControlCount=1;
+                }else{
+                  // 나이스는 10분 남았을 때 공식 확인창에 '연장' 버튼을 표시한다.
+                  // 확인창은 상단 타이머의 조상이 아니므로 문서 전체의 표시된 버튼에서 찾는다.
+                  const controls=[...new Set([...document.querySelectorAll(
                     'button,a,input[type="button"],input[type="submit"],[role="button"],.cl-button')]
                     .filter(e=>visible(e)&&extensionText.test(text(e).replace(/\s+/g,' '))))];
                   extensionControlCount=controls.length;
-                  if(controls.length===1){
-                    const tr=timer.getBoundingClientRect(),cr=controls[0].getBoundingClientRect();
-                    const distance=Math.hypot(
-                      (tr.x+tr.width/2)-(cr.x+cr.width/2),
-                      (tr.y+tr.height/2)-(cr.y+cr.height/2));
-                    if(distance<=600)extensionControl=controls[0];
-                    break;
-                  }
+                  if(controls.length===1)extensionControl=controls[0];
                 }
               }
               const rect=extensionControl?.getBoundingClientRect();
@@ -307,6 +363,30 @@ internal sealed class PortalWorkflowController
                 timerCandidateCount:timerCandidates.length,
                 extensionControlCount
               });
+            })()
+            """;
+    }
+
+    private static string NiceSessionExtensionClickScript()
+    {
+        return """
+            (()=>{
+              const visible=e=>{
+                if(!e)return false;
+                const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+                return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'
+                  &&!e.disabled&&e.getAttribute?.('aria-disabled')!=='true';
+              };
+              const controls=[...document.querySelectorAll('.btn-asd.selected')]
+                .filter(e=>{
+                  if(!visible(e))return false;
+                  const r=e.getBoundingClientRect();
+                  const atScreenEdge=r.x<90||r.right>innerWidth-90;
+                  return atScreenEdge&&r.width<=60&&r.height<=60;
+                });
+              if(controls.length!==1)return false;
+              controls[0].click();
+              return true;
             })()
             """;
     }
