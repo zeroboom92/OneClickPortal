@@ -457,12 +457,21 @@ internal sealed class PortalWorkflowController
         await TryCloseVisibleNiceNoticeDialogAsync(session, cancellationToken);
 
         var openDialog = await GetVisibleNiceRequestDialogAsync(session, cancellationToken);
+        var orphanedCurrentDialog = false;
         if (string.Equals(openDialog, dialogTitle, StringComparison.Ordinal))
         {
-            await PrepareBrowserForUserAsync(session, cancellationToken);
-            return new WorkflowResult(
-                $"이미 열려 있는 {displayName} 입력 화면을 표시했습니다. 내용을 계속 입력해 주세요.",
-                KeepActivatedBrowser: true);
+            var taskTabVisible = await session.EvaluateBooleanAsync(
+                NiceTaskTabSelectedExpression(menuName),
+                cancellationToken: cancellationToken);
+            if (taskTabVisible)
+            {
+                await PrepareBrowserForUserAsync(session, cancellationToken);
+                return new WorkflowResult(
+                    $"이미 열려 있는 {displayName} 입력 화면을 표시했습니다. 내용을 계속 입력해 주세요.",
+                    KeepActivatedBrowser: true);
+            }
+
+            orphanedCurrentDialog = true;
         }
 
         if (!string.IsNullOrEmpty(openDialog))
@@ -471,27 +480,27 @@ internal sealed class PortalWorkflowController
             await CloseVisibleNiceRequestDialogAsync(session, openDialog, cancellationToken);
         }
 
-        _reportProgress($"{displayName}: 복무 메뉴 여는 중");
-        await EnsureNiceDutyMenuExpandedAsync(session, cancellationToken);
-
-        _reportProgress($"{displayName}: {menuName} 이동 중");
-        await ClickNiceMenuAsync(session, menuName, cancellationToken);
-        await Task.Delay(750, cancellationToken);
-        await WaitForConditionAsync(
+        await ResetStaleNiceTaskStateAsync(
             session,
-            NiceControlVisibleExpression("신청"),
-            TimeSpan.FromSeconds(30),
-            cancellationToken,
-            $"{menuName} 화면의 신청 버튼을 준비하는 시간이 초과되었습니다.");
-
-        _reportProgress($"{displayName}: 신청 입력창 준비 중");
-        await ClickNiceControlAsync(
-            session,
+            menuName,
             "신청",
-            $"{menuName} 화면에서 신청 버튼을 찾지 못했습니다.",
+            orphanedCurrentDialog,
             cancellationToken);
 
-        await WaitForVisibleTextAsync(session, dialogTitle, TimeSpan.FromSeconds(20), cancellationToken);
+        _reportProgress($"{displayName}: {menuName} 이동 중");
+        await NavigateNiceMenuToControlAsync(
+            session,
+            menuName,
+            "신청",
+            cancellationToken);
+
+        _reportProgress($"{displayName}: 신청 입력창 준비 중");
+        await OpenNiceRequestDialogAsync(
+            session,
+            menuName,
+            dialogTitle,
+            $"{menuName} 화면에서 신청 버튼을 찾지 못했습니다.",
+            cancellationToken);
 
         await PrepareBrowserForUserAsync(session, cancellationToken);
         return new WorkflowResult(
@@ -514,7 +523,7 @@ internal sealed class PortalWorkflowController
         await PrepareActivatedTargetForBackgroundAsync(cancellationToken);
 
         _reportProgress("기안: 업무관리로 전환 중");
-        await SelectEdufineJobAsync(session, "업무관리", 0, cancellationToken);
+        await SelectEdufineJobAsync(session, "업무관리", cancellationToken);
         await ClickEdufineTopMenuAsync(session, "문서관리", cancellationToken);
 
         _reportProgress("기안: 공용서식으로 이동 중");
@@ -569,7 +578,7 @@ internal sealed class PortalWorkflowController
         await PrepareActivatedTargetForBackgroundAsync(cancellationToken);
 
         _reportProgress("품의: 학교회계로 전환 중");
-        await SelectEdufineJobAsync(session, "학교회계", 2, cancellationToken);
+        await SelectEdufineJobAsync(session, "학교회계", cancellationToken);
         await ClickEdufineTopMenuAsync(session, "사업관리", cancellationToken);
 
         _reportProgress("품의: 품의등록으로 이동 중");
@@ -1082,17 +1091,24 @@ internal sealed class PortalWorkflowController
     {
         for (var attempt = 1; attempt <= 3; attempt++)
         {
-            if (await IsNiceMenuVisibleAsync(session, "개인근무상황관리", cancellationToken))
+            if (await session.EvaluateBooleanAsync(
+                    NiceDutyMenuExpandedExpression(),
+                    cancellationToken: cancellationToken)
+                && await IsNiceMenuVisibleAsync(
+                    session,
+                    "개인근무상황관리",
+                    cancellationToken))
             {
                 return;
             }
 
-            await ClickNiceMenuAsync(session, "복무", cancellationToken);
+            await ClickNiceDutyMenuExpandIconAsync(session, cancellationToken);
             try
             {
                 await WaitForConditionAsync(
                     session,
-                    NiceMenuVisibleExpression("개인근무상황관리"),
+                    $"({NiceDutyMenuExpandedExpression()})"
+                        + $"&&({NiceMenuVisibleExpression("개인근무상황관리")})",
                     TimeSpan.FromSeconds(12),
                     cancellationToken,
                     "나이스 복무 하위 메뉴를 여는 시간이 초과되었습니다.");
@@ -1107,6 +1123,142 @@ internal sealed class PortalWorkflowController
         }
 
         throw new TimeoutException("나이스 복무 하위 메뉴를 열지 못했습니다.");
+    }
+
+    private static async Task NavigateNiceMenuToControlAsync(
+        DevToolsSession session,
+        string menuName,
+        string controlText,
+        CancellationToken cancellationToken)
+    {
+        var attemptTimeouts = new[]
+        {
+            TimeSpan.FromSeconds(4),
+            TimeSpan.FromSeconds(20),
+        };
+
+        for (var attempt = 0; attempt < attemptTimeouts.Length; attempt++)
+        {
+            var pageReadyExpression =
+                $"({NiceTaskTabSelectedExpression(menuName)})"
+                + $"&&({NiceTaskControlVisibleExpression(menuName, controlText)})";
+            var taskTabWasVisible = await session.EvaluateBooleanAsync(
+                NiceTaskTabSelectedExpression(menuName),
+                cancellationToken: cancellationToken);
+            await EnsureNiceDutyMenuExpandedAsync(session, cancellationToken);
+            await ClickNiceMenuAsync(session, menuName, cancellationToken);
+
+            if (taskTabWasVisible)
+            {
+                await WaitForConditionAsync(
+                    session,
+                    $"({pageReadyExpression})"
+                        + $"||!({NiceTaskTabSelectedExpression(menuName)})",
+                    attemptTimeouts[attempt],
+                    cancellationToken,
+                    $"{menuName} 화면 전환 상태를 확인하는 시간이 초과되었습니다.");
+                if (await session.EvaluateBooleanAsync(
+                        pageReadyExpression,
+                        cancellationToken: cancellationToken))
+                {
+                    return;
+                }
+
+                AppLogger.Info(
+                    "Workflow",
+                    $"{menuName} 탭 종료를 감지해 메뉴 이동을 즉시 다시 시도합니다.");
+                continue;
+            }
+
+            try
+            {
+                await WaitForConditionAsync(
+                    session,
+                    pageReadyExpression,
+                    attemptTimeouts[attempt],
+                    cancellationToken,
+                    $"{menuName} 화면의 {controlText} 버튼을 준비하는 시간이 초과되었습니다.");
+                return;
+            }
+            catch (TimeoutException exception) when (
+                attempt + 1 < attemptTimeouts.Length
+                && exception is not DevToolsCommandTimeoutException)
+            {
+                AppLogger.Info(
+                    "Workflow",
+                    $"{menuName} 탭 종료와 화면 이동이 겹쳐 메뉴 이동을 다시 시도합니다.");
+            }
+        }
+    }
+
+    private static async Task ResetStaleNiceTaskStateAsync(
+        DevToolsSession session,
+        string menuName,
+        string controlText,
+        bool forceReset,
+        CancellationToken cancellationToken)
+    {
+        if (!forceReset)
+        {
+            var selectedTaskTabVisible = await session.EvaluateBooleanAsync(
+                NiceSelectedTaskTabVisibleExpression(),
+                cancellationToken: cancellationToken);
+            if (selectedTaskTabVisible)
+            {
+                return;
+            }
+
+            var taskTabVisible = await session.EvaluateBooleanAsync(
+                NiceTaskTabSelectedExpression(menuName),
+                cancellationToken: cancellationToken);
+            var controlVisible = await session.EvaluateBooleanAsync(
+                NiceControlVisibleExpression(controlText),
+                cancellationToken: cancellationToken);
+            if (taskTabVisible || !controlVisible)
+            {
+                return;
+            }
+        }
+
+        AppLogger.Info(
+            "Workflow",
+            $"{menuName} 탭 없이 남은 이전 화면을 정리합니다.");
+        if (!await IsNiceMenuVisibleAsync(session, menuName, cancellationToken))
+        {
+            return;
+        }
+
+        if (!await session.EvaluateBooleanAsync(
+                NiceDutyMenuExpandedExpression(),
+                cancellationToken: cancellationToken))
+        {
+            return;
+        }
+
+        await ClickNiceDutyMenuExpandIconAsync(session, cancellationToken);
+        await WaitForConditionAsync(
+            session,
+            $"!({NiceDutyMenuExpandedExpression()})",
+            TimeSpan.FromSeconds(3),
+            cancellationToken,
+            $"{menuName}의 이전 메뉴 상태를 정리하는 시간이 초과되었습니다.");
+    }
+
+    private static Task ClickNiceDutyMenuExpandIconAsync(
+        DevToolsSession session,
+        CancellationToken cancellationToken)
+    {
+        var dutyMenuText = JsonSerializer.Serialize("복무 ");
+        var expandIconExpression = "(()=>{const n=" + dutyMenuText + ";"
+            + "const t=[...document.querySelectorAll('.cl-text')].find(e=>"
+            + "(e.textContent||'').trim().startsWith(n)&&e.getBoundingClientRect().width>0);"
+            + "return t?.closest('a.cl-sidenavigation-item')?.querySelector('.cl-expand-icon')||null;})()";
+        return ClickElementCenterAsync(
+            session,
+            expandIconExpression,
+            "나이스 복무 메뉴의 펼침 버튼을 찾지 못했습니다.",
+            TimeSpan.FromSeconds(3),
+            cancellationToken);
     }
 
     private static async Task ClickNiceMenuAsync(
@@ -1159,35 +1311,63 @@ internal sealed class PortalWorkflowController
             + "return d.querySelector('.cl-dialog-header .cl-dialog-close')||d.querySelector('.cl-dialog-close')"
             + "||[...d.querySelectorAll('.cl-button')].find(e=>(e.textContent||'').trim()==='닫기'&&visible(e));"
             + "})()";
-        await ClickElementCenterAsync(
-            session,
-            elementExpression,
-            $"열려 있는 {dialogTitle} 입력창의 닫기 버튼을 찾지 못했습니다.",
-            TimeSpan.FromSeconds(5),
-            cancellationToken);
-
-        await WaitForConditionAsync(
-            session,
-            $"!(()=>{{const n={title};const visible=e=>{{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';}};return [...document.querySelectorAll('.cl-dialog-header .cl-text,h1.cl-text')].some(e=>(e.textContent||'').trim()===n&&visible(e));}})()",
-            TimeSpan.FromSeconds(10),
-            cancellationToken,
-            $"{dialogTitle} 입력창이 닫히는 시간이 초과되었습니다.");
+        var dialogClosedExpression =
+            $"!(()=>{{const n={title};const visible=e=>{{const r=e.getBoundingClientRect(),s=getComputedStyle(e);"
+            + "return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};"
+            + "return [...document.querySelectorAll('.cl-dialog-header .cl-text,h1.cl-text')]"
+            + ".some(e=>(e.textContent||'').trim()===n&&visible(e));})()";
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            await ClickElementCenterAsync(
+                session,
+                elementExpression,
+                $"열려 있는 {dialogTitle} 입력창의 닫기 버튼을 찾지 못했습니다.",
+                TimeSpan.FromSeconds(5),
+                cancellationToken);
+            try
+            {
+                await WaitForConditionAsync(
+                    session,
+                    dialogClosedExpression,
+                    attempt == 0 ? TimeSpan.FromSeconds(2) : TimeSpan.FromSeconds(8),
+                    cancellationToken,
+                    $"{dialogTitle} 입력창이 닫히는 시간이 초과되었습니다.");
+                break;
+            }
+            catch (TimeoutException exception) when (
+                attempt == 0 && exception is not DevToolsCommandTimeoutException)
+            {
+                AppLogger.Info("Workflow", $"{dialogTitle} 입력창 닫기를 다시 시도합니다.");
+            }
+        }
         AppLogger.Info("Workflow", $"{dialogTitle} 입력창을 닫았습니다.");
     }
 
     private static async Task SelectEdufineJobAsync(
         DevToolsSession session,
         string jobName,
-        int jobIndex,
         CancellationToken cancellationToken)
     {
         const string inputSelector = "[id$='cboJobList.comboedit:input']";
-        const string buttonSelector = "[id$='cboJobList.dropbutton']";
         await WaitForConditionAsync(
             session,
             $"!!document.querySelector({JsonSerializer.Serialize(inputSelector)})",
             TimeSpan.FromSeconds(20),
             cancellationToken);
+
+        var jobNames = await ReadEdufineJobNamesAsync(session, cancellationToken);
+        var jobIndex = jobNames.FindIndex(name => string.Equals(name, jobName, StringComparison.Ordinal));
+        if (jobIndex < 0)
+        {
+            throw new InvalidOperationException(
+                $"K-에듀파인 업무 목록에서 {jobName}을(를) 찾지 못했습니다. "
+                + $"감지된 업무: {string.Join(", ", jobNames)}");
+        }
+
+        AppLogger.Info(
+            "Workflow",
+            $"K-에듀파인 업무 목록: {string.Join(", ", jobNames)} / {jobName} 위치: {jobIndex + 1}번째");
+
         var current = await session.EvaluateStringAsync(
             $"document.querySelector({JsonSerializer.Serialize(inputSelector)})?.value ?? ''",
             cancellationToken);
@@ -1196,30 +1376,67 @@ internal sealed class PortalWorkflowController
             return;
         }
 
-        await ClickElementCenterAsync(
-            session,
-            $"document.querySelector({JsonSerializer.Serialize(buttonSelector)})",
-            "K-에듀파인 업무 선택 상자를 찾지 못했습니다.",
-            TimeSpan.FromSeconds(20),
+        var serializedJobName = JsonSerializer.Serialize(jobName);
+        var selectExpression = "(()=>{const wanted=" + serializedJobName + ";"
+            + "const application=globalThis.nexacro?.getApplication?.()||globalThis.application;"
+            + "const combo=application?.mainframe?.MainVFrameSet?.TopFrame?.form?.cboJobList;"
+            + "const dataset=combo?.getInnerDataset?.()||combo?._innerdataset;"
+            + "if(!combo||!dataset||typeof combo._on_value_change!=='function')return false;"
+            + "const dataColumn=combo.datacolumn||'menuNm',codeColumn=combo.codecolumn||'menuId';"
+            + "let targetIndex=-1;for(let row=0;row<dataset.getRowCount();row++){"
+            + "const name=((dataset.getColumn(row,dataColumn)||'')+'').replace(/\\s+/g,' ').trim();"
+            + "if(name===wanted){targetIndex=row;break;}}if(targetIndex<0)return false;"
+            + "const postText=((dataset.getColumn(targetIndex,dataColumn)||'')+'').replace(/\\s+/g,' ').trim();"
+            + "const postValue=dataset.getColumn(targetIndex,codeColumn);"
+            + "const changed=combo._on_value_change(combo.index,combo.text,combo.value,targetIndex,postText,postValue);"
+            + "combo.redraw?.();return changed!==false;})()";
+        var selectionDispatched = await session.EvaluateBooleanAsync(
+            selectExpression,
+            userGesture: true,
             cancellationToken);
-
-        for (var count = 0; count < 6; count++)
+        if (!selectionDispatched)
         {
-            await session.PressKeyAsync("ArrowUp", "ArrowUp", 38, cancellationToken);
+            throw new InvalidOperationException($"K-에듀파인에서 {jobName} 선택 이벤트를 실행하지 못했습니다.");
         }
 
-        for (var count = 0; count < jobIndex; count++)
-        {
-            await session.PressKeyAsync("ArrowDown", "ArrowDown", 40, cancellationToken);
-        }
-
-        await session.PressKeyAsync("Enter", "Enter", 13, cancellationToken);
         await WaitForConditionAsync(
             session,
             $"document.querySelector({JsonSerializer.Serialize(inputSelector)})?.value === {JsonSerializer.Serialize(jobName)}",
             TimeSpan.FromSeconds(25),
             cancellationToken);
+        AppLogger.Info("Workflow", $"K-에듀파인 업무 선택 결과: {jobName}");
         await Task.Delay(800, cancellationToken);
+    }
+
+    private static async Task<List<string>> ReadEdufineJobNamesAsync(
+        DevToolsSession session,
+        CancellationToken cancellationToken)
+    {
+        const string expression = """
+            (()=>{
+              const application=globalThis.nexacro?.getApplication?.()||globalThis.application;
+              const combo=application?.mainframe?.MainVFrameSet?.TopFrame?.form?.cboJobList;
+              const dataset=combo?.getInnerDataset?.()||combo?._innerdataset;
+              if(!combo||!dataset||typeof dataset.getRowCount!=='function')return '[]';
+              const dataColumn=combo.datacolumn||'menuNm';
+              const names=[];
+              for(let row=0;row<dataset.getRowCount();row++){
+                const name=((dataset.getColumn(row,dataColumn)||'')+'').replace(/\s+/g,' ').trim();
+                if(name)names.push(name);
+              }
+              return JSON.stringify(names);
+            })()
+            """;
+        var json = await session.EvaluateStringAsync(expression, cancellationToken);
+        var jobNames = string.IsNullOrWhiteSpace(json)
+            ? new List<string>()
+            : JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
+        if (jobNames.Count == 0)
+        {
+            throw new InvalidOperationException("K-에듀파인 업무 목록을 읽지 못했습니다.");
+        }
+
+        return jobNames;
     }
 
     private static async Task ClickEdufineTopMenuAsync(
@@ -1330,39 +1547,63 @@ internal sealed class PortalWorkflowController
 
     private static async Task ClickNiceControlAsync(
         DevToolsSession session,
+        string menuName,
         string text,
         string errorMessage,
         CancellationToken cancellationToken)
     {
-        var value = JsonSerializer.Serialize(text);
-        var elementExpression = "(()=>{const n=" + value + ";const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);"
-            + "return r.width>0&&r.height>0&&r.x>=0&&r.y>=0&&s.display!=='none'&&s.visibility!=='hidden';};"
-            + "const xs=[...document.querySelectorAll('.cl-button,button,a')].filter(e=>(e.textContent||'').trim()===n&&visible(e));"
-            + "return xs.find(e=>e.classList.contains('btn-primary')&&e.classList.contains('cl-button'))"
-            + "||xs.find(e=>e.classList.contains('cl-button'))||xs[0]||null;})()";
-        var clickExpression = "(()=>{const e=(" + elementExpression + ");if(!e)return false;e.click();return true;})()";
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
-        Exception? lastException = null;
-        while (DateTime.UtcNow < deadline)
+        await ClickElementCenterAsync(
+            session,
+            NiceTaskControlElementExpression(menuName, text),
+            errorMessage,
+            TimeSpan.FromSeconds(20),
+            cancellationToken);
+    }
+
+    private static async Task OpenNiceRequestDialogAsync(
+        DevToolsSession session,
+        string menuName,
+        string dialogTitle,
+        string errorMessage,
+        CancellationToken cancellationToken)
+    {
+        var attemptTimeouts = new[]
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            TimeSpan.FromSeconds(3),
+            TimeSpan.FromSeconds(8),
+        };
+
+        for (var attempt = 0; attempt < attemptTimeouts.Length; attempt++)
+        {
+            await ClickNiceControlAsync(
+                session,
+                menuName,
+                "신청",
+                errorMessage,
+                cancellationToken);
             try
             {
-                if (await session.EvaluateBooleanAsync(clickExpression, userGesture: true, cancellationToken))
-                {
-                    return;
-                }
+                await WaitForVisibleTextAsync(
+                    session,
+                    dialogTitle,
+                    attemptTimeouts[attempt],
+                    cancellationToken);
+                return;
             }
-            catch (InvalidOperationException exception)
+            catch (TimeoutException exception) when (
+                attempt + 1 < attemptTimeouts.Length
+                && exception is not DevToolsCommandTimeoutException)
             {
-                lastException = exception;
-                AppLogger.Info("Workflow", "나이스 버튼 클릭을 재시도합니다.");
+                AppLogger.Info(
+                    "Workflow",
+                    $"{dialogTitle} 입력창이 열리지 않아 신청 동작을 다시 시도합니다.");
+                await NavigateNiceMenuToControlAsync(
+                    session,
+                    menuName,
+                    "신청",
+                    cancellationToken);
             }
-
-            await Task.Delay(250, cancellationToken);
         }
-
-        throw new InvalidOperationException(errorMessage, lastException);
     }
 
     private static Task WaitForVisibleTextAsync(
@@ -1502,12 +1743,61 @@ internal sealed class PortalWorkflowController
             + "&&r.width>0&&r.height>0&&r.x>=0&&s.display!=='none'&&s.visibility!=='hidden';});})()";
     }
 
+    private static string NiceDutyMenuExpandedExpression()
+    {
+        return "document.querySelector('a.cl-sidenavigation-item[title=\"복무\"]')"
+            + "?.getAttribute('aria-expanded')==='true'";
+    }
+
     private static string NiceControlVisibleExpression(string text)
     {
         var value = JsonSerializer.Serialize(text);
         return "(()=>{const n=" + value + ";return [...document.querySelectorAll('.cl-button,button,a')].some(e=>{"
             + "const r=e.getBoundingClientRect(),s=getComputedStyle(e);return (e.textContent||'').trim()===n"
             + "&&r.width>0&&r.height>0&&r.x>=0&&r.y>=0&&s.display!=='none'&&s.visibility!=='hidden';});})()";
+    }
+
+    private static string NiceTaskTabSelectedExpression(string tabName)
+    {
+        var value = JsonSerializer.Serialize(tabName);
+        return "(()=>{const n=" + value + ";return [...document.querySelectorAll('.cl-tabfolder-item')].some(e=>{"
+            + "const r=e.getBoundingClientRect(),s=getComputedStyle(e);return (e.innerText||e.textContent||'').trim()===n"
+            + "&&e.classList.contains('cl-selected')&&r.width>0&&r.height>0&&r.x>=0&&r.y>=0"
+            + "&&s.display!=='none'&&s.visibility!=='hidden';});})()";
+    }
+
+    private static string NiceSelectedTaskTabVisibleExpression()
+    {
+        return "(()=>{return [...document.querySelectorAll('.cl-tabfolder-item.cl-selected')].some(e=>{"
+            + "const r=e.getBoundingClientRect(),s=getComputedStyle(e);return !e.classList.contains('unable-to-close')"
+            + "&&r.width>0&&r.height>0&&r.x>=0&&r.y>=0"
+            + "&&s.display!=='none'&&s.visibility!=='hidden';});})()";
+    }
+
+    private static string NiceTaskControlVisibleExpression(
+        string tabName,
+        string controlText)
+    {
+        return $"!!({NiceTaskControlElementExpression(tabName, controlText)})";
+    }
+
+    private static string NiceTaskControlElementExpression(
+        string tabName,
+        string controlText)
+    {
+        var tabValue = JsonSerializer.Serialize(tabName);
+        var controlValue = JsonSerializer.Serialize(controlText);
+        return "(()=>{const tabName=" + tabValue + ",controlText=" + controlValue + ";"
+            + "const visible=e=>{if(!e)return false;const r=e.getBoundingClientRect(),s=getComputedStyle(e);"
+            + "return r.width>0&&r.height>0&&r.x>=0&&r.y>=0&&s.display!=='none'&&s.visibility!=='hidden';};"
+            + "const item=[...document.querySelectorAll('.cl-tabfolder-item')].find(e=>"
+            + "(e.innerText||e.textContent||'').trim()===tabName&&e.classList.contains('cl-selected')&&visible(e));"
+            + "const tab=item?.querySelector('[role=\"tab\"][aria-controls]');"
+            + "const panel=tab?document.getElementById(tab.getAttribute('aria-controls')):null;if(!panel)return null;"
+            + "const xs=[...panel.querySelectorAll('.cl-button,button,a')].filter(e=>"
+            + "(e.textContent||'').trim()===controlText&&visible(e));"
+            + "return xs.find(e=>e.classList.contains('btn-primary')&&e.classList.contains('cl-button'))"
+            + "||xs.find(e=>e.classList.contains('cl-button'))||xs[0]||null;})()";
     }
 
     private static string TextExistsInFramesExpression(string text)

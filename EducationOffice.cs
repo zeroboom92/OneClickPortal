@@ -1,12 +1,15 @@
 namespace BrowserThumbnailPrototype;
 
-internal sealed record EducationOffice(string Name, string Code)
+internal sealed record EducationOffice(
+    string Name,
+    string Code,
+    string? EdufineDomainOverride = null)
 {
     public string PortalDomain => $"{Code}.eduptl.kr";
 
     public string NiceDomain => $"{Code}.neis.go.kr";
 
-    public string EdufineDomain => $"klef.{Code}.go.kr";
+    public string EdufineDomain => EdufineDomainOverride ?? $"klef.{Code}.go.kr";
 
     public string EvpnDomain => $"evpn.{Code}.go.kr";
 
@@ -27,7 +30,7 @@ internal static class EducationOfficeCatalog
         new("부산", "pen"),
         new("대구", "dge"),
         new("대전", "dje"),
-        new("경북", "gbe"),
+        new("경북", "gbe", "klef.gbe.kr"),
         new("세종", "sje"),
         new("울산", "use"),
         new("인천", "ice"),
