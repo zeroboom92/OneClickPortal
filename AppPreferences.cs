@@ -7,6 +7,7 @@ internal static class AppPreferences
     private const string ApplicationName = "OneClickPortal";
     private const string SettingsKeyPath = @"Software\OneClickPortal";
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string WindowsStartupValueName = "WindowsStartupEnabled";
     private const string AutoRefreshValueName = "PortalAutoRefresh";
     private const string WindowOpacityValueName = "WindowOpacityPercent";
     private const string WindowLeftValueName = "WindowLeft";
@@ -20,8 +21,25 @@ internal static class AppPreferences
 
     public static bool IsWindowsStartupEnabled()
     {
-        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-        return key?.GetValue(ApplicationName) is string value && !string.IsNullOrWhiteSpace(value);
+        using var settingsKey = Registry.CurrentUser.OpenSubKey(SettingsKeyPath, writable: false);
+        if (settingsKey?.GetValue(WindowsStartupValueName) is int value)
+        {
+            return value != 0;
+        }
+
+        if (settingsKey is null)
+        {
+            return true;
+        }
+
+        using var runKey = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
+        return runKey?.GetValue(ApplicationName) is string runValue
+            && !string.IsNullOrWhiteSpace(runValue);
+    }
+
+    public static void ApplyWindowsStartupPreference()
+    {
+        SetWindowsStartupEnabled(IsWindowsStartupEnabled());
     }
 
     public static void SetWindowsStartupEnabled(bool enabled)
@@ -36,6 +54,10 @@ internal static class AppPreferences
         {
             key.DeleteValue(ApplicationName, throwOnMissingValue: false);
         }
+
+        using var settingsKey = Registry.CurrentUser.CreateSubKey(SettingsKeyPath, writable: true)
+            ?? throw new InvalidOperationException("프로그램 설정을 저장하지 못했습니다.");
+        settingsKey.SetValue(WindowsStartupValueName, enabled ? 1 : 0, RegistryValueKind.DWord);
     }
 
     public static bool IsPortalAutoRefreshEnabled()
