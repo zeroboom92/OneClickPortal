@@ -22,7 +22,11 @@ internal sealed class PortalWorkflowController
 {
     private const int SessionExtensionThresholdSeconds = 20 * 60;
     private static readonly TimeSpan SessionExtensionRetryDelay = TimeSpan.FromMinutes(1);
+    // 나이스 화면의 타이머는 백그라운드 탭에서 갱신이 늦어질 수 있으므로
+    // 표시 시간과 무관하게 서버 세션 DB를 주기적으로 확인한다.
+    private static readonly TimeSpan NiceSessionKeepAliveInterval = TimeSpan.FromMinutes(5);
     private static readonly ConcurrentDictionary<string, DateTime> LastSessionExtensionAttemptUtc = new();
+    private static readonly ConcurrentDictionary<string, DateTime> LastSuccessfulNiceExtensionUtc = new();
 
     private readonly int _devToolsPort;
     private readonly EducationOffice _educationOffice;
@@ -151,6 +155,34 @@ internal sealed class PortalWorkflowController
         try
         {
             await using var session = await DevToolsSession.ConnectAsync(_devToolsPort, target.Id, cancellationToken);
+            if (isNice)
+            {
+                if (LastSuccessfulNiceExtensionUtc.TryGetValue(domain, out var lastSuccess)
+                    && DateTime.UtcNow - lastSuccess < NiceSessionKeepAliveInterval)
+                {
+                    AppLogger.Info(
+                        "SessionRefresh",
+                        $"{systemName}: 백그라운드 세션 유지 요청을 건너뜁니다. (최근 성공 후 5분 미만)");
+                    return;
+                }
+
+                var niceExtensionRequested = await session.EvaluateBooleanAsync(
+                    NiceSessionExtensionRequestScript(),
+                    userGesture: true,
+                    cancellationToken);
+                if (!niceExtensionRequested)
+                {
+                    AppLogger.Info(
+                        "SessionRefresh",
+                        "나이스: 백그라운드 세션 유지 요청에 실패했습니다. 다음 주기에 다시 시도합니다.");
+                    return;
+                }
+
+                LastSuccessfulNiceExtensionUtc[domain] = DateTime.UtcNow;
+                AppLogger.Info("SessionRefresh", "나이스: 백그라운드 세션 유지와 표시 시간 초기화를 완료했습니다.");
+                return;
+            }
+
             var snapshot = await ReadSessionSnapshotAsync(session, cancellationToken);
             if (snapshot.RemainingSeconds is null)
             {
@@ -183,24 +215,6 @@ internal sealed class PortalWorkflowController
             }
 
             LastSessionExtensionAttemptUtc[domain] = DateTime.UtcNow;
-            if (isNice)
-            {
-                var niceExtensionRequested = await session.EvaluateBooleanAsync(
-                    NiceSessionExtensionRequestScript(),
-                    userGesture: true,
-                    cancellationToken);
-                if (!niceExtensionRequested)
-                {
-                    AppLogger.Info(
-                        "SessionRefresh",
-                        "나이스: 공식 세션 연장 요청 또는 표시 시간 초기화에 실패했습니다.");
-                    return;
-                }
-
-                AppLogger.Info("SessionRefresh", "나이스: 공식 세션 연장과 표시 시간 초기화를 완료했습니다.");
-                return;
-            }
-
             await session.ClickAsync(
                 snapshot.ExtensionControlX!.Value,
                 snapshot.ExtensionControlY!.Value,
@@ -353,11 +367,9 @@ internal sealed class PortalWorkflowController
         return """
             (async()=>{
               const mainApp=window.voMainApp;
-              if(!mainApp
-                ||typeof mainApp.hasAppMethod!=='function'
-                ||!mainApp.hasAppMethod('setSessionTimerInit')){
-                return false;
-              }
+              const canResetTimer=!!mainApp
+                &&typeof mainApp.hasAppMethod==='function'
+                &&mainApp.hasAppMethod('setSessionTimerInit');
 
               const response=await fetch('/sessionExtension.do',{
                 method:'POST',
@@ -373,7 +385,7 @@ internal sealed class PortalWorkflowController
               const result=(await response.text()).trim();
               if(result!=='"Y"'&&result!=='Y')return false;
 
-              mainApp.callAppMethod('setSessionTimerInit');
+              if(canResetTimer)mainApp.callAppMethod('setSessionTimerInit');
               return true;
             })()
             """;

@@ -60,7 +60,7 @@
 - `UsageTelemetry.cs`: 업무 흐름을 막지 않는 일 1회 통계와 오전 시간대 현재 사용자 신호 전송·조회
 - `functions/`: Firebase HTTP Function 및 입력 검증 테스트
 - `firebase.json`, `firestore.rules`: Firebase 배포 설정과 클라이언트 접근 차단 규칙
-- `BrowserThumbnailPrototype.csproj`: .NET 8 Windows Forms 설정, 실행 파일명 `OneClickPortal`, 현재 버전 `0.1.13`
+- `BrowserThumbnailPrototype.csproj`: .NET 8 Windows Forms 설정, 실행 파일명 `OneClickPortal`, 현재 버전 `0.1.14`
 - `README.md`: 사용자 실행 및 사용 방법
 
 ## 검증 결과
@@ -104,7 +104,7 @@ dotnet build .\BrowserThumbnailPrototype.csproj --configuration Debug
 - 나이스 복무·출장 이동 전 대상 메뉴가 보이지 않으면 `기본메뉴 및 승인사항`으로 전환해 현재 업무 탭과 무관한 메뉴 경로를 준비합니다.
 - DOM 텍스트 확인 시 숨겨진 탭과 닫힌 대화상자를 현재 화면으로 판정하지 않도록 표시 상태를 함께 검사합니다.
 - 복무·출장 간 전환 시 현재 열려 있는 나이스 신청 입력창을 닫고 선택한 업무 화면으로 이동합니다.
-- 나이스와 K-에듀파인은 1분마다 세션 남은 시간을 확인합니다. 남은 시간이 20분 이하일 때 K-에듀파인은 실제 `staUseTime`/`btnUseTimeExtn` 컨트롤을 사용하고, 나이스는 공식 `/sessionExtension.do` 요청과 `setSessionTimerInit`으로 현재 업무 화면을 유지한 채 연장합니다.
+- 나이스와 K-에듀파인은 1분마다 백그라운드 상태를 확인합니다. K-에듀파인은 남은 시간이 20분 이하일 때 실제 `staUseTime`/`btnUseTimeExtn` 컨트롤을 사용하고, 나이스는 표시 타이머에 의존하지 않고 5분마다 공식 `/sessionExtension.do` 요청과 `setSessionTimerInit`을 실행해 현재 업무 화면을 유지합니다.
 - 남은 시간이나 연장 버튼을 확인하지 못하면 작업 유실을 막기 위해 페이지를 새로고침하지 않고 로그에 진단 결과를 남깁니다.
 - 세션 시간과 같은 작은 화면 영역 안에 클릭 가능한 연장 버튼이 하나만 있을 때 실제 마우스 입력으로 누르며, 결과를 확인하지 못한 경우 1분 후 재시도합니다.
 - 업무 이동과 세션 확인은 동시에 브라우저를 조작하지 않으며, 사용자가 업무 버튼을 누르면 세션 확인을 취소하고 업무 이동을 우선합니다.
