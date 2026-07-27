@@ -21,7 +21,7 @@ internal sealed record WorkflowResult(
 internal sealed class PortalWorkflowController
 {
     private const int SessionExtensionThresholdSeconds = 20 * 60;
-    private static readonly TimeSpan SessionExtensionRetryDelay = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan SessionExtensionRetryDelay = TimeSpan.FromMinutes(1);
     private static readonly ConcurrentDictionary<string, DateTime> LastSessionExtensionAttemptUtc = new();
 
     private readonly int _devToolsPort;
@@ -167,7 +167,7 @@ internal sealed class PortalWorkflowController
                 return;
             }
 
-            if (!snapshot.ExtensionControlFound)
+            if (!isNice && !snapshot.ExtensionControlFound)
             {
                 AppLogger.Info(
                     "SessionRefresh",
@@ -178,33 +178,33 @@ internal sealed class PortalWorkflowController
             if (LastSessionExtensionAttemptUtc.TryGetValue(domain, out var lastAttempt)
                 && DateTime.UtcNow - lastAttempt < SessionExtensionRetryDelay)
             {
-                AppLogger.Info("SessionRefresh", $"{systemName}: 최근 연장 시도 후 5분이 지나지 않아 다시 누르지 않습니다.");
+                AppLogger.Info("SessionRefresh", $"{systemName}: 최근 연장 시도 후 1분이 지나지 않아 다시 누르지 않습니다.");
                 return;
             }
 
             LastSessionExtensionAttemptUtc[domain] = DateTime.UtcNow;
-            var niceCategoryClickDispatched = false;
             if (isNice)
             {
-                niceCategoryClickDispatched = await session.EvaluateBooleanAsync(
-                    NiceSessionExtensionClickScript(),
+                var niceExtensionRequested = await session.EvaluateBooleanAsync(
+                    NiceSessionExtensionRequestScript(),
                     userGesture: true,
                     cancellationToken);
-                if (!niceCategoryClickDispatched)
+                if (!niceExtensionRequested)
                 {
                     AppLogger.Info(
                         "SessionRefresh",
-                        "나이스: 선택된 카테고리 버튼이 바뀌어 세션 연장 클릭을 안전하게 건너뜁니다.");
+                        "나이스: 공식 세션 연장 요청 또는 표시 시간 초기화에 실패했습니다.");
                     return;
                 }
+
+                AppLogger.Info("SessionRefresh", "나이스: 공식 세션 연장과 표시 시간 초기화를 완료했습니다.");
+                return;
             }
-            else
-            {
-                await session.ClickAsync(
-                    snapshot.ExtensionControlX!.Value,
-                    snapshot.ExtensionControlY!.Value,
-                    cancellationToken);
-            }
+
+            await session.ClickAsync(
+                snapshot.ExtensionControlX!.Value,
+                snapshot.ExtensionControlY!.Value,
+                cancellationToken);
 
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(8);
             while (DateTime.UtcNow < deadline)
@@ -217,15 +217,6 @@ internal sealed class PortalWorkflowController
                     AppLogger.Info("SessionRefresh", $"{systemName}: 세션을 연장했습니다.");
                     return;
                 }
-            }
-
-            if (isNice && niceCategoryClickDispatched)
-            {
-                AppLogger.Info(
-                    "SessionRefresh",
-                    "나이스: 선택된 카테고리를 다시 눌러 세션 연장을 요청했습니다. "
-                    + "백그라운드 탭의 시간 표시는 탭을 다시 열 때 갱신됩니다.");
-                return;
             }
 
             AppLogger.Info(
@@ -330,19 +321,9 @@ internal sealed class PortalWorkflowController
               let extensionControl=null;
               let extensionControlCount=0;
               if(timerCandidates.length===1){
-                const officialNiceControl=[...document.querySelectorAll('.btn-asd.selected')]
-                  .filter(e=>{
-                    if(!visible(e))return false;
-                    const r=e.getBoundingClientRect();
-                    const atScreenEdge=r.x<90||r.right>innerWidth-90;
-                    return atScreenEdge&&r.width<=60&&r.height<=60;
-                  });
                 const officialEdufineControl=[...document.querySelectorAll("[id$='btnUseTimeExtn']")]
                   .filter(visible);
-                if(officialNiceControl.length===1){
-                  extensionControl=officialNiceControl[0];
-                  extensionControlCount=1;
-                }else if(officialEdufineControl.length===1){
+                if(officialEdufineControl.length===1){
                   extensionControl=officialEdufineControl[0];
                   extensionControlCount=1;
                 }else{
@@ -367,25 +348,32 @@ internal sealed class PortalWorkflowController
             """;
     }
 
-    private static string NiceSessionExtensionClickScript()
+    private static string NiceSessionExtensionRequestScript()
     {
         return """
-            (()=>{
-              const visible=e=>{
-                if(!e)return false;
-                const r=e.getBoundingClientRect(),s=getComputedStyle(e);
-                return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'
-                  &&!e.disabled&&e.getAttribute?.('aria-disabled')!=='true';
-              };
-              const controls=[...document.querySelectorAll('.btn-asd.selected')]
-                .filter(e=>{
-                  if(!visible(e))return false;
-                  const r=e.getBoundingClientRect();
-                  const atScreenEdge=r.x<90||r.right>innerWidth-90;
-                  return atScreenEdge&&r.width<=60&&r.height<=60;
-                });
-              if(controls.length!==1)return false;
-              controls[0].click();
+            (async()=>{
+              const mainApp=window.voMainApp;
+              if(!mainApp
+                ||typeof mainApp.hasAppMethod!=='function'
+                ||!mainApp.hasAppMethod('setSessionTimerInit')){
+                return false;
+              }
+
+              const response=await fetch('/sessionExtension.do',{
+                method:'POST',
+                credentials:'same-origin',
+                headers:{
+                  'X-Requested-With':'XMLHttpRequest',
+                  'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                body:''
+              });
+              if(!response.ok)return false;
+
+              const result=(await response.text()).trim();
+              if(result!=='"Y"'&&result!=='Y')return false;
+
+              mainApp.callAppMethod('setSessionTimerInit');
               return true;
             })()
             """;
@@ -1091,10 +1079,7 @@ internal sealed class PortalWorkflowController
     {
         for (var attempt = 1; attempt <= 3; attempt++)
         {
-            if (await session.EvaluateBooleanAsync(
-                    NiceDutyMenuExpandedExpression(),
-                    cancellationToken: cancellationToken)
-                && await IsNiceMenuVisibleAsync(
+            if (await IsNiceMenuVisibleAsync(
                     session,
                     "개인근무상황관리",
                     cancellationToken))
@@ -1102,13 +1087,13 @@ internal sealed class PortalWorkflowController
                 return;
             }
 
+            await EnsureNiceBaseMenuVisibleAsync(session, cancellationToken);
             await ClickNiceDutyMenuExpandIconAsync(session, cancellationToken);
             try
             {
                 await WaitForConditionAsync(
                     session,
-                    $"({NiceDutyMenuExpandedExpression()})"
-                        + $"&&({NiceMenuVisibleExpression("개인근무상황관리")})",
+                    NiceMenuVisibleExpression("개인근무상황관리"),
                     TimeSpan.FromSeconds(12),
                     cancellationToken,
                     "나이스 복무 하위 메뉴를 여는 시간이 초과되었습니다.");
@@ -1123,6 +1108,40 @@ internal sealed class PortalWorkflowController
         }
 
         throw new TimeoutException("나이스 복무 하위 메뉴를 열지 못했습니다.");
+    }
+
+    private static async Task EnsureNiceBaseMenuVisibleAsync(
+        DevToolsSession session,
+        CancellationToken cancellationToken)
+    {
+        if (await IsNiceMenuVisibleAsync(session, "복무", cancellationToken))
+        {
+            return;
+        }
+
+        AppLogger.Info(
+            "Workflow",
+            "현재 작업 화면과 무관하게 나이스 기본메뉴에서 복무 메뉴를 준비합니다.");
+        const string baseMenuButtonExpression =
+            "(()=>[...document.querySelectorAll('.btn-asd.mymenu,[title=\"기본메뉴 및 승인사항\"]')]"
+            + ".find(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);"
+            + "return r.width>0&&r.height>0&&r.x>=0&&r.y>=0"
+            + "&&s.display!=='none'&&s.visibility!=='hidden';})||null)()";
+        await ClickElementCenterAsync(
+            session,
+            baseMenuButtonExpression,
+            "나이스 기본메뉴 버튼을 찾지 못했습니다.",
+            TimeSpan.FromSeconds(5),
+            cancellationToken);
+        await WaitForConditionAsync(
+            session,
+            NiceMenuVisibleExpression("복무"),
+            TimeSpan.FromSeconds(15),
+            cancellationToken,
+            "나이스 기본메뉴에서 복무 메뉴를 불러오는 시간이 초과되었습니다.");
+        // 기본메뉴 조회가 끝나며 사이드 메뉴 DOM이 한 번 더 그려질 수 있으므로
+        // 재렌더링 직후의 사라질 요소를 클릭하지 않도록 잠시 안정화한다.
+        await Task.Delay(750, cancellationToken);
     }
 
     private static async Task NavigateNiceMenuToControlAsync(
@@ -1228,37 +1247,51 @@ internal sealed class PortalWorkflowController
             return;
         }
 
-        if (!await session.EvaluateBooleanAsync(
-                NiceDutyMenuExpandedExpression(),
-                cancellationToken: cancellationToken))
-        {
-            return;
-        }
-
         await ClickNiceDutyMenuExpandIconAsync(session, cancellationToken);
         await WaitForConditionAsync(
             session,
-            $"!({NiceDutyMenuExpandedExpression()})",
+            $"!({NiceMenuVisibleExpression(menuName)})",
             TimeSpan.FromSeconds(3),
             cancellationToken,
             $"{menuName}의 이전 메뉴 상태를 정리하는 시간이 초과되었습니다.");
     }
 
-    private static Task ClickNiceDutyMenuExpandIconAsync(
+    private static async Task ClickNiceDutyMenuExpandIconAsync(
         DevToolsSession session,
         CancellationToken cancellationToken)
     {
-        var dutyMenuText = JsonSerializer.Serialize("복무 ");
+        var dutyMenuText = JsonSerializer.Serialize("복무");
         var expandIconExpression = "(()=>{const n=" + dutyMenuText + ";"
-            + "const t=[...document.querySelectorAll('.cl-text')].find(e=>"
-            + "(e.textContent||'').trim().startsWith(n)&&e.getBoundingClientRect().width>0);"
-            + "return t?.closest('a.cl-sidenavigation-item')?.querySelector('.cl-expand-icon')||null;})()";
-        return ClickElementCenterAsync(
-            session,
-            expandIconExpression,
-            "나이스 복무 메뉴의 펼침 버튼을 찾지 못했습니다.",
-            TimeSpan.FromSeconds(3),
-            cancellationToken);
+            + "const norm=v=>(v||'').replace(/\\s+/g,' ').trim();"
+            + "const visible=e=>{if(!e)return false;const r=e.getBoundingClientRect(),s=getComputedStyle(e);"
+            + "return r.width>0&&r.height>0&&r.x>=0&&s.display!=='none'&&s.visibility!=='hidden';};"
+            + "const links=[...document.querySelectorAll('a.cl-sidenavigation-item,a[title]')].filter(visible);"
+            + "const item=links.find(e=>norm(e.getAttribute('title'))===n)"
+            + "||links.find(e=>[...e.querySelectorAll('.cl-text')].some(t=>norm(t.textContent)===n&&visible(t)))"
+            + "||[...document.querySelectorAll('.cl-text')].find(t=>norm(t.textContent)===n&&visible(t))"
+            + "?.closest('a.cl-sidenavigation-item,a');"
+            + "return item?.querySelector('.cl-expand-icon,[class*=\"expand\"]')||item||null;})()";
+        try
+        {
+            await ClickElementCenterAsync(
+                session,
+                expandIconExpression,
+                "나이스 복무 메뉴의 펼침 버튼을 찾지 못했습니다.",
+                TimeSpan.FromSeconds(3),
+                cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
+            var visibleMenus = await session.EvaluateStringAsync(
+                "(()=>{const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);"
+                    + "return r.width>0&&r.height>0&&r.x>=0&&s.display!=='none'&&s.visibility!=='hidden';};"
+                    + "return JSON.stringify([...document.querySelectorAll('a.cl-sidenavigation-item,.cl-text')]"
+                    + ".filter(visible).map(e=>((e.getAttribute?.('title')||e.textContent||'')+'')"
+                    + ".replace(/\\s+/g,' ').trim()).filter(Boolean).slice(0,30));})()",
+                cancellationToken);
+            AppLogger.Info("Workflow", $"나이스 복무 메뉴 탐색 실패 화면 항목: {visibleMenus}");
+            throw;
+        }
     }
 
     private static async Task ClickNiceMenuAsync(
@@ -1266,11 +1299,15 @@ internal sealed class PortalWorkflowController
         string menuName,
         CancellationToken cancellationToken)
     {
-        var value = JsonSerializer.Serialize(menuName + " ");
-        var elementExpression = "(()=>{const n=" + value + ";const t=[...document.querySelectorAll('.cl-text')].find(e=>{"
-            + "const r=e.getBoundingClientRect();const s=getComputedStyle(e);return (e.textContent||'').trim().startsWith(n)"
-            + "&&r.width>0&&r.height>0&&r.x>=0&&s.display!=='none'&&s.visibility!=='hidden';});"
-            + "return t?(t.closest('a')||t):null;})()";
+        var value = JsonSerializer.Serialize(menuName);
+        var elementExpression = "(()=>{const n=" + value + ";"
+            + "const norm=v=>(v||'').replace(/\\s+/g,' ').trim();"
+            + "const visible=e=>{if(!e)return false;const r=e.getBoundingClientRect(),s=getComputedStyle(e);"
+            + "return r.width>0&&r.height>0&&r.x>=0&&s.display!=='none'&&s.visibility!=='hidden';};"
+            + "const t=[...document.querySelectorAll('.cl-text')].find(e=>norm(e.textContent)===n&&visible(e));"
+            + "if(t)return t.closest('a')||t;"
+            + "return [...document.querySelectorAll('a.cl-sidenavigation-item,a[title]')]"
+            + ".find(e=>visible(e)&&(norm(e.getAttribute('title'))===n||norm(e.textContent)===n))||null;})()";
         await ClickElementCenterAsync(
             session,
             elementExpression,
@@ -1737,16 +1774,14 @@ internal sealed class PortalWorkflowController
 
     private static string NiceMenuVisibleExpression(string menuName)
     {
-        var value = JsonSerializer.Serialize(menuName + " ");
-        return "(()=>{const n=" + value + ";return [...document.querySelectorAll('.cl-text')].some(e=>{"
-            + "const r=e.getBoundingClientRect(),s=getComputedStyle(e);return (e.textContent||'').trim().startsWith(n)"
-            + "&&r.width>0&&r.height>0&&r.x>=0&&s.display!=='none'&&s.visibility!=='hidden';});})()";
-    }
-
-    private static string NiceDutyMenuExpandedExpression()
-    {
-        return "document.querySelector('a.cl-sidenavigation-item[title=\"복무\"]')"
-            + "?.getAttribute('aria-expanded')==='true'";
+        var value = JsonSerializer.Serialize(menuName);
+        return "(()=>{const n=" + value + ";"
+            + "const norm=v=>(v||'').replace(/\\s+/g,' ').trim();"
+            + "return [...document.querySelectorAll('.cl-text,a.cl-sidenavigation-item,a[title]')].some(e=>{"
+            + "const r=e.getBoundingClientRect(),s=getComputedStyle(e);"
+            + "const text=e.matches('a[title]')?e.getAttribute('title'):e.textContent;"
+            + "return norm(text)===n&&r.width>0&&r.height>0&&r.x>=0"
+            + "&&s.display!=='none'&&s.visibility!=='hidden';});})()";
     }
 
     private static string NiceControlVisibleExpression(string text)
