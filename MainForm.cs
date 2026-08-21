@@ -53,6 +53,19 @@ public sealed class MainForm : Form
         Font = new Font("맑은 고딕", 9F);
 
         BuildUi();
+
+        // 고배율 화면(125%·150%·175% 등) 대응.
+        //
+        // 이 창은 크기와 버튼 폭을 96DPI 기준 숫자로 직접 지정합니다. 그런데 AutoScaleDimensions 를
+        // 따로 정해 주지 않으면 WinForms 가 기준값을 "현재 장치 DPI"로 잡아 확대 배율이 1이 됩니다.
+        // 그래서 창과 버튼은 그대로인데 글자(pt 단위)만 배율만큼 커져, 175% 화면에서는 제목이
+        // "원클릭업"으로 잘리고 두 줄 버튼이 서로 겹쳐 보입니다.
+        //
+        // 기준값 대입은 **반드시 BuildUi() 뒤**여야 합니다. 대입하는 순간 그 시점의 화면을 기준으로
+        // 확대가 수행되고 기준값이 현재 DPI 로 되돌아가므로, 앞에서 넣으면 아직 비어 있는 창만
+        // 확대되고 실제 UI 에는 적용되지 않습니다.
+        AutoScaleDimensions = new SizeF(96F, 96F);
+
         ApplyWindowOpacity();
         AppLogger.Info("Application", "프로그램 시작");
 
