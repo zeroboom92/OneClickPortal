@@ -33,6 +33,9 @@ public sealed class MainForm : Form
     private bool _isClosing;
     private string? _connectedProcessName;
     private int? _devToolsPort;
+
+    /// <summary>브라우저 연결 전에 들어온 외부 요청입니다. 연결이 끝나면 이어서 실행합니다.</summary>
+    private PortalTaskKind? _pendingTaskKind;
     private CancellationTokenSource? _workflowCancellationSource;
     private CancellationTokenSource? _sessionCheckCancellationSource;
     private int _sourceExtendedStyle;
@@ -206,16 +209,9 @@ public sealed class MainForm : Form
         ConfigureTaskButtonPanel(_topTaskButtonPanel);
         ConfigureTaskButtonPanel(_bottomTaskButtonPanel);
 
-        var tasks = new[]
-        {
-            (Name: "나이스", Kind: PortalTaskKind.NiceHome),
-            (Name: "복무", Kind: PortalTaskKind.Leave),
-            (Name: "출장", Kind: PortalTaskKind.BusinessTrip),
-            (Name: "에듀파인", Kind: PortalTaskKind.EdufineHome),
-            (Name: "기안", Kind: PortalTaskKind.Draft),
-            (Name: "품의", Kind: PortalTaskKind.PurchaseRequest),
-        };
-        for (var index = 0; index < tasks.Length; index++)
+        // 버튼 목록과 외부 요청 이름은 PortalTaskCatalog 한곳에서 관리합니다.
+        var tasks = PortalTaskCatalog.All;
+        for (var index = 0; index < tasks.Count; index++)
         {
             var task = tasks[index];
             var button = new Button
@@ -582,6 +578,8 @@ public sealed class MainForm : Form
             {
                 UpdateConnectionControls();
             }
+
+            RunPendingTaskIfAny();
         }
     }
 
@@ -621,6 +619,87 @@ public sealed class MainForm : Form
         {
             MessageBox.Show(this, exception.Message, "Edge 실행 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    /// <summary>
+    /// 외부에서 들어온 요청을 업무 버튼과 똑같은 동작으로 연결합니다.
+    /// <paramref name="taskKind"/>가 <c>null</c>이면 창만 앞으로 가져옵니다.
+    /// 파이프를 읽는 백그라운드 스레드에서 호출될 수 있어 UI 스레드로 옮겨 처리합니다.
+    /// </summary>
+    internal void RequestPortalTask(PortalTaskKind? taskKind)
+    {
+        if (_isClosing || IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => RequestPortalTask(taskKind));
+            return;
+        }
+
+        BringWidgetToFront();
+
+        if (taskKind is not { } requestedTask)
+        {
+            return;
+        }
+
+        // 아직 브라우저에 연결되지 않았으면 요청을 기억해 두었다가 연결 직후 이어서 실행합니다.
+        // 이렇게 하지 않으면 프로그램이 꺼져 있던 선생님은 "먼저 연결해 주세요" 안내만 보고 끝납니다.
+        if (!IsBrowserConnected())
+        {
+            _pendingTaskKind = requestedTask;
+            SetStatus($"{PortalTaskCatalog.GetName(requestedTask)} 요청을 받았습니다. Edge에 연결하면 이어서 진행합니다.");
+            return;
+        }
+
+        _ = RunWorkflowAsync(requestedTask);
+    }
+
+    private bool IsBrowserConnected()
+        => _sourceWindow != IntPtr.Zero
+            && NativeMethods.IsWindow(_sourceWindow)
+            && _devToolsPort is not null;
+
+    private void BringWidgetToFront()
+    {
+        try
+        {
+            if (WindowState == FormWindowState.Minimized)
+            {
+                WindowState = FormWindowState.Normal;
+            }
+
+            Activate();
+        }
+        catch (Exception exception)
+        {
+            AppLogger.Error("Application", "조작창을 앞으로 가져오지 못했습니다.", exception);
+        }
+    }
+
+    /// <summary>
+    /// 연결 전에 받아 둔 요청이 있으면 실행합니다.
+    /// 연결에 실패했을 때 나중에 엉뚱한 시점에 실행되지 않도록, 확인 여부와 무관하게 요청은 비웁니다.
+    /// </summary>
+    private void RunPendingTaskIfAny()
+    {
+        if (_pendingTaskKind is not { } pendingTask)
+        {
+            return;
+        }
+
+        _pendingTaskKind = null;
+
+        if (_isClosing || IsDisposed || Disposing || !IsBrowserConnected())
+        {
+            return;
+        }
+
+        // 연결 처리가 완전히 끝난 뒤에 실행되도록 다음 차례로 미룹니다.
+        BeginInvoke(() => _ = RunWorkflowAsync(pendingTask));
     }
 
     private async Task RunWorkflowAsync(PortalTaskKind taskKind)
