@@ -18,6 +18,14 @@ internal sealed record WorkflowResult(
     IntPtr ForegroundWindow = default,
     bool KeepActivatedBrowser = false);
 
+internal sealed class PortalSessionExpiredException : InvalidOperationException
+{
+    public PortalSessionExpiredException(string message)
+        : base(message)
+    {
+    }
+}
+
 internal sealed class PortalWorkflowController
 {
     private const int SessionExtensionThresholdSeconds = 20 * 60;
@@ -123,6 +131,7 @@ internal sealed class PortalWorkflowController
             cancellationToken))
         {
             await WaitForEdufineReadyAsync(edufineSession, cancellationToken);
+            await TryCloseVisibleEdufineNoticeAsync(edufineSession, cancellationToken);
         }
         AppLogger.Info("Connection", "K-에듀파인 준비 완료");
 
@@ -157,6 +166,14 @@ internal sealed class PortalWorkflowController
             await using var session = await DevToolsSession.ConnectAsync(_devToolsPort, target.Id, cancellationToken);
             if (isNice)
             {
+                if (await IsVisibleNiceSecurityShutdownDialogAsync(session, cancellationToken))
+                {
+                    AppLogger.Info(
+                        "SessionRefresh",
+                        "나이스 보안 종료 안내창이 표시되어 세션 확인을 건너뜁니다.");
+                    return;
+                }
+
                 if (LastSuccessfulNiceExtensionUtc.TryGetValue(domain, out var lastSuccess)
                     && DateTime.UtcNow - lastSuccess < NiceSessionKeepAliveInterval)
                 {
@@ -431,6 +448,10 @@ internal sealed class PortalWorkflowController
         {
             await TryCloseVisibleNiceNoticeDialogAsync(session, cancellationToken);
         }
+        else
+        {
+            await TryCloseVisibleEdufineNoticeAsync(session, cancellationToken);
+        }
         await PrepareBrowserForUserAsync(session, cancellationToken);
         return new WorkflowResult(
             $"{displayName} 화면을 열었습니다.",
@@ -521,6 +542,7 @@ internal sealed class PortalWorkflowController
         await WaitForEdufineReadyAsync(session, cancellationToken);
         await session.ActivateTargetAsync(cancellationToken);
         await PrepareActivatedTargetForBackgroundAsync(cancellationToken);
+        await TryCloseVisibleEdufineNoticeAsync(session, cancellationToken);
 
         _reportProgress("기안: 업무관리로 전환 중");
         await SelectEdufineJobAsync(session, "업무관리", cancellationToken);
@@ -576,6 +598,7 @@ internal sealed class PortalWorkflowController
         await WaitForEdufineReadyAsync(session, cancellationToken);
         await session.ActivateTargetAsync(cancellationToken);
         await PrepareActivatedTargetForBackgroundAsync(cancellationToken);
+        await TryCloseVisibleEdufineNoticeAsync(session, cancellationToken);
 
         _reportProgress("품의: 학교회계로 전환 중");
         await SelectEdufineJobAsync(session, "학교회계", cancellationToken);
@@ -901,21 +924,196 @@ internal sealed class PortalWorkflowController
             && target.Url.Contains(domain, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static Task WaitForNiceReadyAsync(
+    private static async Task WaitForNiceReadyAsync(
         DevToolsSession session,
         CancellationToken cancellationToken)
     {
+        await EnsureNiceSessionAvailableAsync(session, cancellationToken);
         const string expression = "(()=>{if(document.readyState!=='complete')return false;"
             + "const docs=[];const add=d=>{if(!d||docs.includes(d))return;docs.push(d);"
             + "for(const f of d.querySelectorAll('iframe,frame')){try{add(f.contentDocument)}catch{}}};add(document);"
             + "return docs.some(d=>[...d.querySelectorAll('.cl-text')].some(e=>{const t=(e.textContent||'').trim();"
-            + "return t==='복무'||t.startsWith('복무 ');})||(d.body?.innerText||'').includes('나이스'));})()";
-        return WaitForConditionAsync(
+            + "return t==='복무'||t.startsWith('복무 ');})||!!d.querySelector('[title=\"기본메뉴 및 승인사항\"],.btn-asd.mymenu'));})()";
+        await WaitForConditionAsync(
             session,
             expression,
             TimeSpan.FromSeconds(45),
             cancellationToken,
             "나이스 기본 메뉴를 준비하는 시간이 초과되었습니다.");
+        await EnsureNiceSessionAvailableAsync(session, cancellationToken);
+    }
+
+    private static async Task EnsureNiceSessionAvailableAsync(
+        DevToolsSession session,
+        CancellationToken cancellationToken)
+    {
+        if (!await TryCloseVisibleNiceSecurityShutdownDialogAsync(session, cancellationToken))
+        {
+            return;
+        }
+
+        throw new PortalSessionExpiredException(
+            "나이스 세션이 정보보호 정책에 따라 종료되었습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
+    }
+
+    private static Task<bool> IsVisibleNiceSecurityShutdownDialogAsync(
+        DevToolsSession session,
+        CancellationToken cancellationToken)
+    {
+        return session.EvaluateBooleanAsync(
+            NiceSecurityShutdownVisibleExpression(),
+            cancellationToken: cancellationToken);
+    }
+
+    private static async Task<bool> TryCloseVisibleNiceSecurityShutdownDialogAsync(
+        DevToolsSession session,
+        CancellationToken cancellationToken)
+    {
+        var noticeVisibleExpression = NiceSecurityShutdownVisibleExpression();
+        if (!await session.EvaluateBooleanAsync(
+                noticeVisibleExpression,
+                cancellationToken: cancellationToken))
+        {
+            return false;
+        }
+
+        AppLogger.Info("Workflow", "나이스 보안 종료 안내창을 확인했습니다.");
+        const string confirmElementExpression = """
+            (()=>{
+              const normalize=value=>(value||'').replace(/\s+/g,' ').trim();
+              const compact=value=>normalize(value).replace(/\s/g,'');
+              const visible=element=>{
+                if(!element)return false;
+                const rect=element.getBoundingClientRect();
+                const view=element.ownerDocument?.defaultView;
+                const style=view?.getComputedStyle(element);
+                return rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0
+                  &&style?.display!=='none'&&style?.visibility!=='hidden'
+                  &&!element.disabled&&element.getAttribute?.('aria-disabled')!=='true';
+              };
+              const isShutdown=element=>compact(element?.innerText||element?.textContent||'')
+                .includes('정보보호를위해시스템을종료');
+              const elementText=element=>normalize(
+                element.innerText||element.textContent||element.value
+                ||element.getAttribute?.('aria-label')||element.title||'');
+              const documents=[];
+              const visit=currentDocument=>{
+                if(!currentDocument||documents.includes(currentDocument))return;
+                documents.push(currentDocument);
+                for(const frame of currentDocument.querySelectorAll('iframe,frame')){
+                  try{visit(frame.contentDocument);}catch{}
+                }
+              };
+              const popupSelector='[role="dialog"],.cl-dialog,.modal,[class*="popup"],[class*="layer"]';
+              const getScopes=currentDocument=>{
+                const scopes=[];
+                const add=scope=>{
+                  if(scope&&!scopes.includes(scope))scopes.push(scope);
+                };
+                for(const scope of currentDocument.querySelectorAll(popupSelector)){
+                  if(visible(scope)&&isShutdown(scope))add(scope);
+                }
+                const message=[...currentDocument.querySelectorAll('h1,h2,h3,h4,.cl-text,span,div,p')]
+                  .find(element=>visible(element)&&isShutdown(element));
+                if(message){
+                  add(message.closest(popupSelector));
+                  if(!message.closest(popupSelector)){
+                    for(let current=message.parentElement;current;current=current.parentElement){
+                      if(visible(current)&&isShutdown(current)
+                        &&elementText(current).includes('확인')){add(current);break;}
+                    }
+                  }
+                }
+                return scopes;
+              };
+              visit(document);
+              for(const currentDocument of documents){
+                for(const scope of getScopes(currentDocument)){
+                  const actions=[...scope.querySelectorAll(
+                    'button,a,[role="button"],input[type="button"],input[type="submit"],.cl-button')]
+                    .filter(visible);
+                  const confirm=actions.find(action=>elementText(action)==='확인');
+                  if(confirm)return confirm;
+                }
+              }
+              return null;
+            })()
+            """;
+
+        var syntheticClickExpression = "(()=>{const element=(" + confirmElementExpression
+            + ");if(!element)return false;element.click();return true;})()";
+        if (await session.EvaluateBooleanAsync(
+                syntheticClickExpression,
+                userGesture: true,
+                cancellationToken))
+        {
+            try
+            {
+                await WaitForConditionAsync(
+                    session,
+                    $"!({noticeVisibleExpression})",
+                    TimeSpan.FromSeconds(2),
+                    cancellationToken,
+                    "나이스 보안 종료 안내창이 닫히는 시간이 초과되었습니다.");
+                AppLogger.Info("Workflow", "나이스 보안 종료 안내창을 닫았습니다.");
+                return true;
+            }
+            catch (TimeoutException)
+            {
+                AppLogger.Info("Workflow", "나이스 보안 종료 안내창을 실제 마우스 입력으로 다시 닫습니다.");
+            }
+        }
+
+        await ClickElementCenterAsync(
+            session,
+            confirmElementExpression,
+            "나이스 보안 종료 안내창의 확인 버튼을 찾지 못했습니다.",
+            TimeSpan.FromSeconds(5),
+            cancellationToken);
+        await WaitForConditionAsync(
+            session,
+            $"!({noticeVisibleExpression})",
+            TimeSpan.FromSeconds(10),
+            cancellationToken,
+            "나이스 보안 종료 안내창이 닫히는 시간이 초과되었습니다.");
+        AppLogger.Info("Workflow", "나이스 보안 종료 안내창을 닫았습니다.");
+        return true;
+    }
+
+    private static string NiceSecurityShutdownVisibleExpression()
+    {
+        return """
+            (()=>{
+              const normalize=value=>(value||'').replace(/\s+/g,' ').trim();
+              const compact=value=>normalize(value).replace(/\s/g,'');
+              const visible=element=>{
+                if(!element)return false;
+                const rect=element.getBoundingClientRect();
+                const view=element.ownerDocument?.defaultView;
+                const style=view?.getComputedStyle(element);
+                return rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0
+                  &&style?.display!=='none'&&style?.visibility!=='hidden';
+              };
+              const isShutdown=element=>compact(element?.innerText||element?.textContent||'')
+                .includes('정보보호를위해시스템을종료');
+              const documents=[];
+              const visit=currentDocument=>{
+                if(!currentDocument||documents.includes(currentDocument))return;
+                documents.push(currentDocument);
+                for(const frame of currentDocument.querySelectorAll('iframe,frame')){
+                  try{visit(frame.contentDocument);}catch{}
+                }
+              };
+              const popupSelector='[role="dialog"],.cl-dialog,.modal,[class*="popup"],[class*="layer"]';
+              visit(document);
+              return documents.some(currentDocument=>{
+                if([...currentDocument.querySelectorAll(popupSelector)]
+                  .some(scope=>visible(scope)&&isShutdown(scope)))return true;
+                return [...currentDocument.querySelectorAll('h1,h2,h3,h4,.cl-text,span,div,p')]
+                  .some(element=>visible(element)&&isShutdown(element));
+              });
+            })()
+            """;
     }
 
     private static Task WaitForEdufineReadyAsync(
@@ -933,6 +1131,177 @@ internal sealed class PortalWorkflowController
             TimeSpan.FromSeconds(45),
             cancellationToken,
             "K-에듀파인 업무 화면을 준비하는 시간이 초과되었습니다.");
+    }
+
+    private static async Task TryCloseVisibleEdufineNoticeAsync(
+        DevToolsSession session,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await CloseVisibleEdufineNoticeAsync(session, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            AppLogger.Info(
+                "Workflow",
+                $"K-에듀파인 공지사항 자동 닫기를 건너뛰고 다음 단계로 진행합니다: {exception.Message}");
+        }
+    }
+
+    private static async Task CloseVisibleEdufineNoticeAsync(
+        DevToolsSession session,
+        CancellationToken cancellationToken)
+    {
+        const string noticeVisibleExpression = """
+            (()=>{
+              const normalize=value=>(value||'').replace(/\s+/g,' ').trim();
+              const visible=element=>{
+                if(!element)return false;
+                const rect=element.getBoundingClientRect();
+                const view=element.ownerDocument?.defaultView;
+                const style=view?.getComputedStyle(element);
+                return rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0
+                  &&style?.display!=='none'&&style?.visibility!=='hidden';
+              };
+              const documents=[];
+              const visit=currentDocument=>{
+                if(!currentDocument||documents.includes(currentDocument))return;
+                documents.push(currentDocument);
+                for(const frame of currentDocument.querySelectorAll('iframe,frame')){
+                  try{visit(frame.contentDocument);}catch{}
+                }
+              };
+              const popupSelector='[role="dialog"],.cl-dialog,.modal,[class*="popup"],[class*="layer"],[class*="notice"],[id*="popup"],[id*="notice"]';
+              visit(document);
+              return documents.some(currentDocument=>{
+                const scopes=[...currentDocument.querySelectorAll(popupSelector)]
+                  .filter(visible)
+                  .some(scope=>normalize(scope.innerText||scope.textContent).includes('공지사항'));
+                if(scopes)return true;
+                return [...currentDocument.querySelectorAll('h1,h2,h3,h4,.cl-text,span,div')]
+                  .some(element=>visible(element)&&normalize(element.textContent)==='공지사항'
+                    &&!!element.closest(popupSelector));
+              });
+            })()
+            """;
+
+        if (!await session.EvaluateBooleanAsync(
+                noticeVisibleExpression,
+                cancellationToken: cancellationToken))
+        {
+            return;
+        }
+
+        AppLogger.Info("Workflow", "K-에듀파인 공지사항 안내창을 확인했습니다.");
+        const string closeElementExpression = """
+            (()=>{
+              const normalize=value=>(value||'').replace(/\s+/g,' ').trim();
+              const visible=element=>{
+                if(!element)return false;
+                const rect=element.getBoundingClientRect();
+                const view=element.ownerDocument?.defaultView;
+                const style=view?.getComputedStyle(element);
+                return rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0
+                  &&style?.display!=='none'&&style?.visibility!=='hidden'
+                  &&!element.disabled&&element.getAttribute?.('aria-disabled')!=='true';
+              };
+              const documents=[];
+              const visit=currentDocument=>{
+                if(!currentDocument||documents.includes(currentDocument))return;
+                documents.push(currentDocument);
+                for(const frame of currentDocument.querySelectorAll('iframe,frame')){
+                  try{visit(frame.contentDocument);}catch{}
+                }
+              };
+              const popupSelector='[role="dialog"],.cl-dialog,.modal,[class*="popup"],[class*="layer"],[class*="notice"],[id*="popup"],[id*="notice"]';
+              const elementText=element=>normalize(
+                element.innerText||element.textContent||element.value
+                ||element.getAttribute?.('aria-label')||element.title||'');
+              const isClose=element=>{
+                const text=elementText(element);
+                const label=normalize(element.getAttribute?.('aria-label')||element.title||'');
+                const className=typeof element.className==='string'?element.className.toLowerCase():'';
+                return text==='닫기'||/^(닫기|close|x)$/i.test(label)
+                  ||/(^|[-_ ])(?:btn[-_ ]?)?close(?:$|[-_ ])/i.test(className)
+                  ||className.includes('닫기');
+              };
+              const scopesFor=currentDocument=>{
+                const scopes=[];
+                const add=scope=>{
+                  if(scope&&!scopes.includes(scope))scopes.push(scope);
+                };
+                for(const scope of currentDocument.querySelectorAll(popupSelector)){
+                  if(visible(scope)&&elementText(scope).includes('공지사항'))add(scope);
+                }
+                for(const title of currentDocument.querySelectorAll('h1,h2,h3,h4,.cl-text,span,div')){
+                  if(!visible(title)||normalize(title.textContent)!=='공지사항')continue;
+                  add(title.closest(popupSelector));
+                  if(!title.closest(popupSelector)){
+                    for(let current=title.parentElement;current;current=current.parentElement){
+                      if(visible(current)&&elementText(current).includes('공지사항')
+                        &&elementText(current).includes('닫기')){add(current);break;}
+                    }
+                  }
+                }
+                return scopes;
+              };
+              visit(document);
+              for(const currentDocument of documents){
+                for(const scope of scopesFor(currentDocument)){
+                  const actions=[...scope.querySelectorAll(
+                    'button,a,[role="button"],input[type="button"],input[type="submit"],[aria-label],[title],[class*="close"],[class*="Close"]')]
+                    .filter(visible)
+                    .filter(isClose)
+                    .sort((left,right)=>left.children.length-right.children.length);
+                  if(actions.length>0)return actions[0];
+                }
+              }
+              return null;
+            })()
+            """;
+
+        var syntheticClickExpression = "(()=>{const element=(" + closeElementExpression
+            + ");if(!element)return false;element.click();return true;})()";
+        if (await session.EvaluateBooleanAsync(
+                syntheticClickExpression,
+                userGesture: true,
+                cancellationToken))
+        {
+            try
+            {
+                await WaitForConditionAsync(
+                    session,
+                    $"!({noticeVisibleExpression})",
+                    TimeSpan.FromSeconds(2),
+                    cancellationToken,
+                    "K-에듀파인 공지사항 안내창의 DOM 닫기를 재시도합니다.");
+                AppLogger.Info("Workflow", "K-에듀파인 공지사항 안내창을 닫았습니다.");
+                return;
+            }
+            catch (TimeoutException)
+            {
+                AppLogger.Info("Workflow", "K-에듀파인 공지사항 안내창을 실제 마우스 입력으로 다시 닫습니다.");
+            }
+        }
+
+        await ClickElementCenterAsync(
+            session,
+            closeElementExpression,
+            "K-에듀파인 공지사항 안내창의 닫기 버튼을 찾지 못했습니다.",
+            TimeSpan.FromSeconds(5),
+            cancellationToken);
+        await WaitForConditionAsync(
+            session,
+            $"!({noticeVisibleExpression})",
+            TimeSpan.FromSeconds(10),
+            cancellationToken,
+            "K-에듀파인 공지사항 안내창이 닫히는 시간이 초과되었습니다.");
+        AppLogger.Info("Workflow", "K-에듀파인 공지사항 안내창을 닫았습니다.");
     }
 
     private static async Task TryCloseVisibleNiceNoticeDialogAsync(

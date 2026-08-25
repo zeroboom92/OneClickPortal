@@ -28,6 +28,7 @@ internal sealed class SettingsForm : Form
         ClientSize = new Size(410, 438);
         BackColor = Color.White;
         ForeColor = Color.FromArgb(34, 40, 50);
+        AutoScaleMode = AutoScaleMode.Dpi;
         Font = new Font("맑은 고딕", 9F);
 
         var title = new Label
@@ -183,6 +184,8 @@ internal sealed class SettingsForm : Form
 
         AcceptButton = saveButton;
         CancelButton = cancelButton;
+        // 고배율 화면에서 설정창의 고정 배치와 글자가 함께 확대되도록 디자인 기준을 지정합니다.
+        AutoScaleDimensions = new SizeF(96F, 96F);
         Shown += async (_, _) => await UpdateActiveUsersAsync();
     }
 

@@ -37,6 +37,7 @@ public sealed class MainForm : Form
     private CancellationTokenSource? _sessionCheckCancellationSource;
     private int _sourceExtendedStyle;
     private bool _sourceTransparent;
+    private PortalTaskKind? _pendingTaskKind;
 
     public MainForm()
     {
@@ -53,6 +54,9 @@ public sealed class MainForm : Form
         Font = new Font("맑은 고딕", 9F);
 
         BuildUi();
+        // 고배율 화면에서도 고정 크기 UI가 글자와 함께 확대되도록 96 DPI를 디자인 기준으로 지정합니다.
+        // 실제 컨트롤을 만든 뒤에 지정해야 창과 버튼까지 함께 자동 배율 조정됩니다.
+        AutoScaleDimensions = new SizeF(96F, 96F);
         ApplyWindowOpacity();
         AppLogger.Info("Application", "프로그램 시작");
 
@@ -61,6 +65,7 @@ public sealed class MainForm : Form
             PositionAtSavedLocationOrBottomRight();
             RefreshBrowserWindows();
         };
+        DpiChanged += (_, _) => KeepWindowWithinWorkingArea();
         LocationChanged += (_, _) =>
         {
             if (Visible)
@@ -206,16 +211,8 @@ public sealed class MainForm : Form
         ConfigureTaskButtonPanel(_topTaskButtonPanel);
         ConfigureTaskButtonPanel(_bottomTaskButtonPanel);
 
-        var tasks = new[]
-        {
-            (Name: "나이스", Kind: PortalTaskKind.NiceHome),
-            (Name: "복무", Kind: PortalTaskKind.Leave),
-            (Name: "출장", Kind: PortalTaskKind.BusinessTrip),
-            (Name: "에듀파인", Kind: PortalTaskKind.EdufineHome),
-            (Name: "기안", Kind: PortalTaskKind.Draft),
-            (Name: "품의", Kind: PortalTaskKind.PurchaseRequest),
-        };
-        for (var index = 0; index < tasks.Length; index++)
+        var tasks = PortalTaskCatalog.All;
+        for (var index = 0; index < tasks.Count; index++)
         {
             var task = tasks[index];
             var button = new Button
@@ -403,7 +400,7 @@ public sealed class MainForm : Form
 
     private void PositionAtBottomRight()
     {
-        var workingArea = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromControl(this).WorkingArea;
+        var workingArea = Screen.FromControl(this).WorkingArea;
         Location = new Point(
             Math.Max(workingArea.Left, workingArea.Right - Width - 14),
             Math.Max(workingArea.Top, workingArea.Bottom - Height - 14));
@@ -413,13 +410,32 @@ public sealed class MainForm : Form
     {
         var savedLocation = AppPreferences.GetWindowLocation();
         if (savedLocation is Point location
-            && Screen.AllScreens.Any(screen => screen.WorkingArea.Contains(location)))
+            && Screen.AllScreens.Any(screen => screen.WorkingArea.Contains(new Rectangle(location, Size))))
         {
             Location = location;
             return;
         }
 
         PositionAtBottomRight();
+    }
+
+    private void KeepWindowWithinWorkingArea()
+    {
+        if (!IsHandleCreated || Width <= 0 || Height <= 0)
+        {
+            return;
+        }
+
+        var workingArea = Screen.FromControl(this).WorkingArea;
+        var maxLeft = Math.Max(workingArea.Left, workingArea.Right - Width);
+        var maxTop = Math.Max(workingArea.Top, workingArea.Bottom - Height);
+        var nextLocation = new Point(
+            Math.Clamp(Left, workingArea.Left, maxLeft),
+            Math.Clamp(Top, workingArea.Top, maxTop));
+        if (Location != nextLocation)
+        {
+            Location = nextLocation;
+        }
     }
 
     protected override void OnResize(EventArgs e)
@@ -512,6 +528,7 @@ public sealed class MainForm : Form
         _workflowRunning = true;
         _workflowCancellationSource = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         UpdateConnectionControls();
+        var keepPendingTaskAfterFailure = false;
 
         try
         {
@@ -558,6 +575,28 @@ public sealed class MainForm : Form
             _connectedProcessName = null;
             _devToolsPort = null;
         }
+        catch (PortalSessionExpiredException exception)
+        {
+            keepPendingTaskAfterFailure = _pendingTaskKind is not null;
+            AppLogger.Error("Connection", "나이스 세션 종료 상태로 연결 준비를 중단했습니다.", exception);
+            if (_sourceWindow != IntPtr.Zero && NativeMethods.IsWindow(_sourceWindow))
+            {
+                NativeMethods.ShowWindowAsync(_sourceWindow, NativeMethods.SW_MAXIMIZE);
+                NativeMethods.SetForegroundWindow(_sourceWindow);
+            }
+
+            _sourceWindow = IntPtr.Zero;
+            _connectedProcessName = null;
+            _devToolsPort = null;
+            SetConnectionStatus("나이스 재로그인 필요");
+            MessageBox.Show(
+                this,
+                exception.Message + "\r\n\r\n"
+                + "다시 로그인한 뒤 연결하면 대기 중인 업무 요청을 이어서 실행합니다.",
+                "나이스 재로그인 필요",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
         catch (Exception exception)
         {
             AppLogger.Error("Connection", "브라우저 연결 준비 실패", exception);
@@ -581,6 +620,10 @@ public sealed class MainForm : Form
             if (!_isClosing && !IsDisposed && !Disposing)
             {
                 UpdateConnectionControls();
+            }
+            if (!keepPendingTaskAfterFailure)
+            {
+                RunPendingTaskIfAny();
             }
         }
     }
@@ -621,6 +664,79 @@ public sealed class MainForm : Form
         {
             MessageBox.Show(this, exception.Message, "Edge 실행 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    /// <summary>
+    /// 외부에서 들어온 요청을 업무 버튼과 같은 동작으로 연결합니다.
+    /// 업무 종류가 없으면 실행 중인 창만 앞으로 가져옵니다.
+    /// </summary>
+    internal void RequestPortalTask(PortalTaskKind? taskKind)
+    {
+        if (_isClosing || IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => RequestPortalTask(taskKind));
+            return;
+        }
+
+        BringWidgetToFront();
+        if (taskKind is not { } requestedTask)
+        {
+            return;
+        }
+
+        if (!IsBrowserConnected())
+        {
+            _pendingTaskKind = requestedTask;
+            SetStatus($"{PortalTaskCatalog.GetName(requestedTask)} 요청을 받았습니다. Edge에 연결하면 이어서 진행합니다.");
+            return;
+        }
+
+        _ = RunWorkflowAsync(requestedTask);
+    }
+
+    private bool IsBrowserConnected()
+    {
+        return _sourceWindow != IntPtr.Zero
+            && NativeMethods.IsWindow(_sourceWindow)
+            && _devToolsPort is not null;
+    }
+
+    private void BringWidgetToFront()
+    {
+        try
+        {
+            if (WindowState == FormWindowState.Minimized)
+            {
+                WindowState = FormWindowState.Normal;
+            }
+
+            Activate();
+        }
+        catch (Exception exception)
+        {
+            AppLogger.Error("Application", "조작창을 앞으로 가져오지 못했습니다.", exception);
+        }
+    }
+
+    private void RunPendingTaskIfAny()
+    {
+        if (_pendingTaskKind is not { } pendingTask)
+        {
+            return;
+        }
+
+        _pendingTaskKind = null;
+        if (_isClosing || IsDisposed || Disposing || !IsBrowserConnected())
+        {
+            return;
+        }
+
+        BeginInvoke(() => _ = RunWorkflowAsync(pendingTask));
     }
 
     private async Task RunWorkflowAsync(PortalTaskKind taskKind)
@@ -686,6 +802,21 @@ public sealed class MainForm : Form
             ShowSourceWindowMaximized();
             AppLogger.Info("Workflow", $"{taskKind}: 사용자가 취소했거나 전체 제한 시간을 넘었습니다.");
             SetStatus("업무 화면 이동이 취소되었거나 시간이 초과되었습니다.");
+        }
+        catch (PortalSessionExpiredException exception)
+        {
+            _pendingTaskKind = taskKind;
+            ShowSourceWindowMaximized();
+            DisconnectBrowser();
+            SetStatus($"나이스 재로그인 필요 · {PortalTaskCatalog.GetName(taskKind)} 요청 대기 중");
+            AppLogger.Info("Workflow", $"{taskKind}: 나이스 재로그인 후 대기 중인 요청을 이어서 실행합니다.");
+            MessageBox.Show(
+                this,
+                exception.Message + "\r\n\r\n"
+                + $"나이스에 다시 로그인한 뒤 연결하면 {PortalTaskCatalog.GetName(taskKind)} 요청을 이어서 실행합니다.",
+                "나이스 재로그인 필요",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
         }
         catch (Exception exception)
         {

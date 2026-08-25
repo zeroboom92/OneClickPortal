@@ -4,13 +4,14 @@
     <AssemblyName>OneClickPortal</AssemblyName>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Platforms>AnyCPU</Platforms>
-    <Version>0.1.14</Version>
-    <AssemblyVersion>0.1.14.0</AssemblyVersion>
-    <FileVersion>0.1.14.0</FileVersion>
-    <InformationalVersion>0.1.14</InformationalVersion>
+    <Version>0.1.15</Version>
+    <AssemblyVersion>0.1.15.0</AssemblyVersion>
+    <FileVersion>0.1.15.0</FileVersion>
+    <InformationalVersion>0.1.15</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationIcon>assets\OneClickPortal.ico</ApplicationIcon>
     <DefaultItemExcludes>$(DefaultItemExcludes);OneClickPortal-program-source-0.1.5\**;tmp\**</DefaultItemExcludes>
