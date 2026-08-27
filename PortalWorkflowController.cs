@@ -30,11 +30,11 @@ internal sealed class PortalWorkflowController
 {
     private const int SessionExtensionThresholdSeconds = 20 * 60;
     private static readonly TimeSpan SessionExtensionRetryDelay = TimeSpan.FromMinutes(1);
-    // 나이스 화면의 타이머는 백그라운드 탭에서 갱신이 늦어질 수 있으므로
-    // 표시 시간과 무관하게 서버 세션 DB를 주기적으로 확인한다.
-    private static readonly TimeSpan NiceSessionKeepAliveInterval = TimeSpan.FromMinutes(5);
+    // 나이스 자체 세션 확인 주기(20분)에 맞춰 추가 요청을 보내며,
+    // 서버가 세션 DB 없음(N)을 반환한 뒤에는 매분 같은 요청을 반복하지 않습니다.
+    private static readonly TimeSpan NiceSessionKeepAliveInterval = TimeSpan.FromMinutes(20);
     private static readonly ConcurrentDictionary<string, DateTime> LastSessionExtensionAttemptUtc = new();
-    private static readonly ConcurrentDictionary<string, DateTime> LastSuccessfulNiceExtensionUtc = new();
+    private static readonly ConcurrentDictionary<string, DateTime> LastNiceExtensionAttemptUtc = new();
 
     private readonly int _devToolsPort;
     private readonly EducationOffice _educationOffice;
@@ -99,6 +99,8 @@ internal sealed class PortalWorkflowController
     public async Task PrepareApplicationTargetsAsync(CancellationToken cancellationToken = default)
     {
         AppLogger.Info("Connection", "업무 시스템 준비 시작");
+        LastNiceExtensionAttemptUtc.TryRemove(_educationOffice.NiceDomain, out _);
+        LastSessionExtensionAttemptUtc.TryRemove(_educationOffice.EdufineDomain, out _);
         await TryCloseVisiblePortalNoticeAsync(cancellationToken);
 
         _reportProgress("나이스를 미리 여는 중");
@@ -166,36 +168,37 @@ internal sealed class PortalWorkflowController
             await using var session = await DevToolsSession.ConnectAsync(_devToolsPort, target.Id, cancellationToken);
             if (isNice)
             {
-                if (await IsVisibleNiceSecurityShutdownDialogAsync(session, cancellationToken))
+                if (await TryCloseVisibleNiceSecurityShutdownDialogAsync(session, cancellationToken))
                 {
                     AppLogger.Info(
                         "SessionRefresh",
-                        "나이스 보안 종료 안내창이 표시되어 세션 확인을 건너뜁니다.");
-                    return;
+                        "나이스 세션 종료 안내창을 닫고 세션 확인을 중단합니다.");
+                    throw new PortalSessionExpiredException(
+                        "나이스 서버 세션이 종료되었습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
                 }
 
-                if (LastSuccessfulNiceExtensionUtc.TryGetValue(domain, out var lastSuccess)
-                    && DateTime.UtcNow - lastSuccess < NiceSessionKeepAliveInterval)
+                if (LastNiceExtensionAttemptUtc.TryGetValue(domain, out var niceLastAttempt)
+                    && DateTime.UtcNow - niceLastAttempt < NiceSessionKeepAliveInterval)
                 {
                     AppLogger.Info(
                         "SessionRefresh",
-                        $"{systemName}: 백그라운드 세션 유지 요청을 건너뜁니다. (최근 성공 후 5분 미만)");
+                        $"{systemName}: 백그라운드 세션 유지 요청을 건너뜁니다. (최근 시도 후 20분 미만)");
                     return;
                 }
 
-                var niceExtensionRequested = await session.EvaluateBooleanAsync(
+                LastNiceExtensionAttemptUtc[domain] = DateTime.UtcNow;
+                var niceExtensionResult = await session.EvaluateStringAsync(
                     NiceSessionExtensionRequestScript(),
-                    userGesture: true,
                     cancellationToken);
-                if (!niceExtensionRequested)
+                if (!string.Equals(niceExtensionResult, "Y", StringComparison.Ordinal))
                 {
                     AppLogger.Info(
                         "SessionRefresh",
-                        "나이스: 백그라운드 세션 유지 요청에 실패했습니다. 다음 주기에 다시 시도합니다.");
-                    return;
+                        $"나이스: 세션 유지 응답이 Y가 아니어서 재로그인이 필요합니다. 응답={niceExtensionResult ?? "null"}");
+                    throw new PortalSessionExpiredException(
+                        "나이스 서버 세션이 유효하지 않습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
                 }
 
-                LastSuccessfulNiceExtensionUtc[domain] = DateTime.UtcNow;
                 AppLogger.Info("SessionRefresh", "나이스: 백그라운드 세션 유지와 표시 시간 초기화를 완료했습니다.");
                 return;
             }
@@ -203,14 +206,27 @@ internal sealed class PortalWorkflowController
             var snapshot = await ReadSessionSnapshotAsync(session, cancellationToken);
             if (snapshot.RemainingSeconds is null)
             {
-                AppLogger.Info(
-                    "SessionRefresh",
-                    $"{systemName}: 남은 시간 표시를 확인하지 못해 안전하게 건너뜁니다. "
-                    + $"(시간 후보 {snapshot.TimerCandidateCount}, 연장 후보 {snapshot.ExtensionControlCount})");
-                return;
+                // K-에듀파인은 화면 프레임이 바뀌는 순간 타이머 문자열을 잠시
+                // 읽지 못할 수 있습니다. 이때도 실제 공식 연장 버튼 하나가
+                // 표시되어 있다면 그 버튼만 눌러 만료 직전의 공백을 보완합니다.
+                if (!isNice && snapshot.ExtensionControlFound)
+                {
+                    AppLogger.Info(
+                        "SessionRefresh",
+                        $"{systemName}: 타이머는 읽지 못했지만 공식 연장 버튼을 확인해 연장을 시도합니다.");
+                }
+                else
+                {
+                    AppLogger.Info(
+                        "SessionRefresh",
+                        $"{systemName}: 남은 시간 표시를 확인하지 못해 안전하게 건너뜁니다. "
+                        + $"(시간 후보 {snapshot.TimerCandidateCount}, 연장 후보 {snapshot.ExtensionControlCount})");
+                    return;
+                }
             }
 
-            if (snapshot.RemainingSeconds > SessionExtensionThresholdSeconds)
+            if (snapshot.RemainingSeconds is int remainingSeconds
+                && remainingSeconds > SessionExtensionThresholdSeconds)
             {
                 AppLogger.Info("SessionRefresh", $"{systemName}: 남은 시간이 20분을 초과해 연장하지 않습니다.");
                 return;
@@ -258,6 +274,10 @@ internal sealed class PortalWorkflowController
         {
             throw;
         }
+        catch (PortalSessionExpiredException)
+        {
+            throw;
+        }
         catch (Exception exception)
         {
             AppLogger.Error("SessionRefresh", $"{systemName}: 세션 확인 실패", exception);
@@ -300,16 +320,30 @@ internal sealed class PortalWorkflowController
     {
         return """
             (()=>{
+              const documents=[];
+              const visit=(currentDocument,offsetX=0,offsetY=0)=>{
+                if(!currentDocument||documents.some(item=>item.document===currentDocument))return;
+                documents.push({document:currentDocument,offsetX,offsetY});
+                for(const frame of currentDocument.querySelectorAll('iframe,frame')){
+                  try{
+                    const childDocument=frame.contentDocument;
+                    if(!childDocument)continue;
+                    const frameRect=frame.getBoundingClientRect();
+                    visit(childDocument,offsetX+frameRect.x,offsetY+frameRect.y);
+                  }catch{}
+                }
+              };
+              visit(document);
               const visible=e=>{
                 if(!e)return false;
-                const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+                const r=e.getBoundingClientRect(),s=e.ownerDocument.defaultView?.getComputedStyle(e);
                 return r.width>0&&r.height>0&&r.x>=0&&r.y>=0&&s.display!=='none'&&s.visibility!=='hidden'
                   &&!e.disabled&&e.getAttribute?.('aria-disabled')!=='true';
               };
               const text=e=>((e.innerText||e.textContent||e.value||'')+'').trim();
               const searchableText=e=>[text(e),e.getAttribute?.('aria-label')||'',e.title||'']
                 .filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
-              const timeKeyword=/(남은\s*시간|잔여\s*시간|세션\s*(?:만료|종료|남은)|자동\s*로그아웃|로그아웃\s*(?:예정|잔여시간))/;
+              const timeKeyword=/(사용\s*시간|남은\s*시간|잔여\s*시간|접속\s*시간|세션\s*(?:만료|종료|남은)|자동\s*로그아웃|로그아웃\s*(?:예정|잔여시간))/;
               const extensionText=/^(연장|연장하기|시간\s*연장|세션\s*연장|로그인\s*연장|접속\s*연장)$/;
               const parseSeconds=value=>{
                 const korean=value.match(/(\d{1,3})\s*분(?:\s*(\d{1,2})\s*초)?/);
@@ -321,26 +355,34 @@ internal sealed class PortalWorkflowController
                 return two&&Number(two[2])<60?Number(two[1])*60+Number(two[2]):null;
               };
               const rawTimers=[];
+              const officialEdufineControls=[];
 
               // K-에듀파인(cpr)과 나이스의 실제 세션 컨트롤을 우선 사용한다.
               // 두 시스템 모두 화면 문자열보다 생성된 컨트롤 ID가 안정적이다.
-              const officialTimers=[
-                ...document.querySelectorAll("[id$='staUseTime'],[id$='optTime'],[aria-label='세션 종료 시간']")
-              ];
-              for(const e of new Set(officialTimers)){
-                if(!visible(e))continue;
-                const value=searchableText(e);
-                const seconds=parseSeconds(value);
-                if(seconds!==null)rawTimers.push({e,seconds,official:true});
+              for(const item of documents){
+                const officialTimers=[
+                  ...item.document.querySelectorAll("[id$='staUseTime'],[id$='optTime'],[id$='lblUseTime'],[aria-label='세션 종료 시간']")
+                ];
+                for(const e of new Set(officialTimers)){
+                  if(!visible(e))continue;
+                  const value=searchableText(e);
+                  const seconds=parseSeconds(value);
+                  if(seconds!==null)rawTimers.push({e,seconds,official:true,offsetX:item.offsetX,offsetY:item.offsetY});
+                }
+                for(const e of item.document.querySelectorAll("[id$='btnUseTimeExtn']")){
+                  if(visible(e))officialEdufineControls.push({e,offsetX:item.offsetX,offsetY:item.offsetY});
+                }
               }
 
               if(rawTimers.length===0){
-                for(const e of document.querySelectorAll('output,span,div,p,label')){
-                  if(!visible(e))continue;
-                  const value=searchableText(e);
-                  if(value.length>0&&value.length<=180&&timeKeyword.test(value)){
-                    const seconds=parseSeconds(value);
-                    if(seconds!==null)rawTimers.push({e,seconds,official:false});
+                for(const item of documents){
+                  for(const e of item.document.querySelectorAll('output,span,div,p,label')){
+                    if(!visible(e))continue;
+                    const value=searchableText(e);
+                    if(value.length>0&&value.length<=180&&timeKeyword.test(value)){
+                      const seconds=parseSeconds(value);
+                      if(seconds!==null)rawTimers.push({e,seconds,official:false,offsetX:item.offsetX,offsetY:item.offsetY});
+                    }
                   }
                 }
               }
@@ -348,30 +390,39 @@ internal sealed class PortalWorkflowController
               const timerCandidates=rawTimers.some(candidate=>candidate.official)
                 ? rawTimers.filter(candidate=>candidate.official)
                 : rawTimers.filter(candidate=>
-                    !rawTimers.some(other=>other!==candidate&&candidate.e.contains(other.e)));
+                    !rawTimers.some(other=>other!==candidate&&other.e.ownerDocument===candidate.e.ownerDocument
+                      &&candidate.e.contains(other.e)));
               let extensionControl=null;
               let extensionControlCount=0;
-              if(timerCandidates.length===1){
-                const officialEdufineControl=[...document.querySelectorAll("[id$='btnUseTimeExtn']")]
-                  .filter(visible);
-                if(officialEdufineControl.length===1){
-                  extensionControl=officialEdufineControl[0];
-                  extensionControlCount=1;
-                }else{
-                  // 나이스는 10분 남았을 때 공식 확인창에 '연장' 버튼을 표시한다.
-                  // 확인창은 상단 타이머의 조상이 아니므로 문서 전체의 표시된 버튼에서 찾는다.
-                  const controls=[...new Set([...document.querySelectorAll(
+              if(officialEdufineControls.length===1){
+                extensionControl=officialEdufineControls[0];
+                extensionControlCount=1;
+              }else if(timerCandidates.length===1){
+                // 나이스는 10분 남았을 때 공식 확인창에 '연장' 버튼을 표시한다.
+                // 확인창은 상단 타이머의 조상이 아닐 수 있어 모든 프레임에서 찾는다.
+                const controls=[];
+                for(const item of documents){
+                  const controlsInDocument=[...new Set([...item.document.querySelectorAll(
                     'button,a,input[type="button"],input[type="submit"],[role="button"],.cl-button')]
-                    .filter(e=>visible(e)&&extensionText.test(text(e).replace(/\s+/g,' '))))];
-                  extensionControlCount=controls.length;
-                  if(controls.length===1)extensionControl=controls[0];
+                    .filter(e=>visible(e)&&extensionText.test(text(e).replace(/\s+/g,' '))))]
+                    .map(e=>({
+                      e,offsetX:item.offsetX,offsetY:item.offsetY
+                    }));
+                  controls.push(...controlsInDocument);
                 }
+                extensionControlCount=controls.length;
+                if(controls.length===1)extensionControl=controls[0];
               }
-              const rect=extensionControl?.getBoundingClientRect();
+              const rect=extensionControl?.e.getBoundingClientRect();
               return JSON.stringify({
                 remainingSeconds:timerCandidates.length===1?timerCandidates[0].seconds:null,
                 extensionControlFound:!!extensionControl,
-                extensionControlRect:rect?{x:rect.x,y:rect.y,width:rect.width,height:rect.height}:null,
+                extensionControlRect:rect?{
+                  x:rect.x+extensionControl.offsetX,
+                  y:rect.y+extensionControl.offsetY,
+                  width:rect.width,
+                  height:rect.height
+                }:null,
                 timerCandidateCount:timerCandidates.length,
                 extensionControlCount
               });
@@ -397,13 +448,13 @@ internal sealed class PortalWorkflowController
                 },
                 body:''
               });
-              if(!response.ok)return false;
+              if(!response.ok)return 'HTTP_'+response.status;
 
               const result=(await response.text()).trim();
-              if(result!=='"Y"'&&result!=='Y')return false;
+              if(result!=='\"Y\"'&&result!=='Y')return result.slice(0,80)||'EMPTY';
 
               if(canResetTimer)mainApp.callAppMethod('setSessionTimerInit');
-              return true;
+              return 'Y';
             })()
             """;
     }
@@ -416,6 +467,75 @@ internal sealed class PortalWorkflowController
         int TimerCandidateCount,
         int ExtensionControlCount);
 
+    private async Task<WorkflowResult> OpenNiceApplicationAsync(
+        string displayName,
+        string menuName,
+        string dialogTitle,
+        CancellationToken cancellationToken)
+    {
+        _reportProgress($"{displayName}: 나이스 연결 확인 중");
+        var target = await EnsureApplicationTargetAsync(
+            _educationOffice.NiceDomain,
+            "나이스",
+            "나이스",
+            _educationOffice.NiceUri,
+            cancellationToken);
+        await using var session = await DevToolsSession.ConnectAsync(_devToolsPort, target.Id, cancellationToken);
+        await WaitForNiceReadyAsync(session, cancellationToken);
+        await session.ActivateTargetAsync(cancellationToken);
+        await PrepareActivatedTargetForBackgroundAsync(cancellationToken);
+        await TryCloseVisibleNiceNoticeDialogAsync(session, cancellationToken);
+
+        var openDialog = await GetVisibleNiceRequestDialogAsync(session, cancellationToken);
+        var orphanedCurrentDialog = false;
+        if (string.Equals(openDialog, dialogTitle, StringComparison.Ordinal))
+        {
+            var taskTabVisible = await session.EvaluateBooleanAsync(
+                NiceTaskTabSelectedExpression(menuName),
+                cancellationToken: cancellationToken);
+            if (taskTabVisible)
+            {
+                await PrepareBrowserForUserAsync(session, cancellationToken);
+                return new WorkflowResult(
+                    $"이미 열려 있는 {displayName} 입력 화면을 표시했습니다. 내용을 계속 입력해 주세요.",
+                    KeepActivatedBrowser: true);
+            }
+            orphanedCurrentDialog = true;
+        }
+
+        if (!string.IsNullOrEmpty(openDialog))
+        {
+            _reportProgress($"{displayName}: 열려 있는 {openDialog} 입력창 닫는 중");
+            await CloseVisibleNiceRequestDialogAsync(session, openDialog, cancellationToken);
+        }
+
+        await ResetStaleNiceTaskStateAsync(
+            session,
+            menuName,
+            "신청",
+            orphanedCurrentDialog,
+            cancellationToken);
+
+        _reportProgress($"{displayName}: {menuName} 이동 중");
+        await NavigateNiceMenuToControlAsync(
+            session,
+            menuName,
+            "신청",
+            cancellationToken);
+
+        _reportProgress($"{displayName}: 신청 입력창 준비 중");
+        await OpenNiceRequestDialogAsync(
+            session,
+            menuName,
+            dialogTitle,
+            $"{menuName} 화면에서 신청 버튼을 찾지 못했습니다.",
+            cancellationToken);
+
+        await PrepareBrowserForUserAsync(session, cancellationToken);
+        return new WorkflowResult(
+            $"{displayName} 입력 화면을 열었습니다. 내용을 입력한 뒤 승인요청은 직접 눌러 주세요.",
+            KeepActivatedBrowser: true);
+    }
     private async Task<WorkflowResult> OpenSystemHomeAsync(
         string displayName,
         string domain,
@@ -455,77 +575,6 @@ internal sealed class PortalWorkflowController
         await PrepareBrowserForUserAsync(session, cancellationToken);
         return new WorkflowResult(
             $"{displayName} 화면을 열었습니다.",
-            KeepActivatedBrowser: true);
-    }
-
-    private async Task<WorkflowResult> OpenNiceApplicationAsync(
-        string displayName,
-        string menuName,
-        string dialogTitle,
-        CancellationToken cancellationToken)
-    {
-        _reportProgress($"{displayName}: 나이스 연결 확인 중");
-        var target = await EnsureApplicationTargetAsync(
-            _educationOffice.NiceDomain,
-            "나이스",
-            "나이스",
-            _educationOffice.NiceUri,
-            cancellationToken);
-        await using var session = await DevToolsSession.ConnectAsync(_devToolsPort, target.Id, cancellationToken);
-        await WaitForNiceReadyAsync(session, cancellationToken);
-        await session.ActivateTargetAsync(cancellationToken);
-        await PrepareActivatedTargetForBackgroundAsync(cancellationToken);
-        await TryCloseVisibleNiceNoticeDialogAsync(session, cancellationToken);
-
-        var openDialog = await GetVisibleNiceRequestDialogAsync(session, cancellationToken);
-        var orphanedCurrentDialog = false;
-        if (string.Equals(openDialog, dialogTitle, StringComparison.Ordinal))
-        {
-            var taskTabVisible = await session.EvaluateBooleanAsync(
-                NiceTaskTabSelectedExpression(menuName),
-                cancellationToken: cancellationToken);
-            if (taskTabVisible)
-            {
-                await PrepareBrowserForUserAsync(session, cancellationToken);
-                return new WorkflowResult(
-                    $"이미 열려 있는 {displayName} 입력 화면을 표시했습니다. 내용을 계속 입력해 주세요.",
-                    KeepActivatedBrowser: true);
-            }
-
-            orphanedCurrentDialog = true;
-        }
-
-        if (!string.IsNullOrEmpty(openDialog))
-        {
-            _reportProgress($"{displayName}: 열려 있는 {openDialog} 입력창 닫는 중");
-            await CloseVisibleNiceRequestDialogAsync(session, openDialog, cancellationToken);
-        }
-
-        await ResetStaleNiceTaskStateAsync(
-            session,
-            menuName,
-            "신청",
-            orphanedCurrentDialog,
-            cancellationToken);
-
-        _reportProgress($"{displayName}: {menuName} 이동 중");
-        await NavigateNiceMenuToControlAsync(
-            session,
-            menuName,
-            "신청",
-            cancellationToken);
-
-        _reportProgress($"{displayName}: 신청 입력창 준비 중");
-        await OpenNiceRequestDialogAsync(
-            session,
-            menuName,
-            dialogTitle,
-            $"{menuName} 화면에서 신청 버튼을 찾지 못했습니다.",
-            cancellationToken);
-
-        await PrepareBrowserForUserAsync(session, cancellationToken);
-        return new WorkflowResult(
-            $"{displayName} 입력 화면을 열었습니다. 내용을 입력한 뒤 승인요청은 직접 눌러 주세요.",
             KeepActivatedBrowser: true);
     }
 
@@ -956,15 +1005,6 @@ internal sealed class PortalWorkflowController
             "나이스 세션이 정보보호 정책에 따라 종료되었습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
     }
 
-    private static Task<bool> IsVisibleNiceSecurityShutdownDialogAsync(
-        DevToolsSession session,
-        CancellationToken cancellationToken)
-    {
-        return session.EvaluateBooleanAsync(
-            NiceSecurityShutdownVisibleExpression(),
-            cancellationToken: cancellationToken);
-    }
-
     private static async Task<bool> TryCloseVisibleNiceSecurityShutdownDialogAsync(
         DevToolsSession session,
         CancellationToken cancellationToken)
@@ -978,6 +1018,7 @@ internal sealed class PortalWorkflowController
         }
 
         AppLogger.Info("Workflow", "나이스 보안 종료 안내창을 확인했습니다.");
+        await session.ActivateTargetAsync(cancellationToken);
         const string confirmElementExpression = """
             (()=>{
               const normalize=value=>(value||'').replace(/\s+/g,' ').trim();
@@ -991,8 +1032,13 @@ internal sealed class PortalWorkflowController
                   &&style?.display!=='none'&&style?.visibility!=='hidden'
                   &&!element.disabled&&element.getAttribute?.('aria-disabled')!=='true';
               };
-              const isShutdown=element=>compact(element?.innerText||element?.textContent||'')
-                .includes('정보보호를위해시스템을종료');
+              const isShutdown=element=>{
+                const text=compact(element?.innerText||element?.textContent||'');
+                return text.includes('정보보호를위해시스템을종료')
+                  ||text.includes('세션DB정보가없어시스템을종료')
+                  ||text.includes('세션이종료되었습니다')
+                  ||text.includes('다시로그인하신후서비스를이용해주시기바랍니다');
+              };
               const elementText=element=>normalize(
                 element.innerText||element.textContent||element.value
                 ||element.getAttribute?.('aria-label')||element.title||'');
@@ -1064,19 +1110,58 @@ internal sealed class PortalWorkflowController
             }
         }
 
-        await ClickElementCenterAsync(
-            session,
-            confirmElementExpression,
-            "나이스 보안 종료 안내창의 확인 버튼을 찾지 못했습니다.",
-            TimeSpan.FromSeconds(5),
-            cancellationToken);
-        await WaitForConditionAsync(
-            session,
-            $"!({noticeVisibleExpression})",
-            TimeSpan.FromSeconds(10),
-            cancellationToken,
-            "나이스 보안 종료 안내창이 닫히는 시간이 초과되었습니다.");
-        AppLogger.Info("Workflow", "나이스 보안 종료 안내창을 닫았습니다.");
+        const string focusConfirmExpression = "(()=>{const element=(" + confirmElementExpression
+            + ");if(!element)return false;element.focus?.();return true;})()";
+        if (await session.EvaluateBooleanAsync(
+                focusConfirmExpression,
+                userGesture: true,
+                cancellationToken))
+        {
+            try
+            {
+                await session.PressKeyAsync("Enter", "Enter", 13, cancellationToken);
+                await WaitForConditionAsync(
+                    session,
+                    $"!({noticeVisibleExpression})",
+                    TimeSpan.FromSeconds(2),
+                    cancellationToken,
+                    "나이스 세션 종료 안내창이 닫히는 시간이 초과되었습니다.");
+                AppLogger.Info("Workflow", "나이스 세션 종료 안내창을 키보드 입력으로 닫았습니다.");
+                return true;
+            }
+            catch (TimeoutException)
+            {
+                AppLogger.Info("Workflow", "나이스 세션 종료 안내창의 키보드 입력을 다시 시도합니다.");
+            }
+        }
+
+        try
+        {
+            await ClickElementCenterAsync(
+                session,
+                confirmElementExpression,
+                "나이스 세션 종료 안내창의 확인 버튼을 찾지 못했습니다.",
+                TimeSpan.FromSeconds(5),
+                cancellationToken);
+            await WaitForConditionAsync(
+                session,
+                $"!({noticeVisibleExpression})",
+                TimeSpan.FromSeconds(10),
+                cancellationToken,
+                "나이스 세션 종료 안내창이 닫히는 시간이 초과되었습니다.");
+            AppLogger.Info("Workflow", "나이스 세션 종료 안내창을 닫았습니다.");
+        }
+        catch (TimeoutException exception)
+        {
+            AppLogger.Info("Workflow", $"나이스 세션 종료 안내창 닫힘을 확인하지 못했습니다: {exception.Message}");
+        }
+        catch (InvalidOperationException exception)
+        {
+            AppLogger.Info("Workflow", $"나이스 세션 종료 안내창 확인 버튼 입력에 실패했습니다: {exception.Message}");
+        }
+
+        // 세션 종료 안내창을 확인한 이상, 닫힘 확인이 실패해도 일반 연결 실패로 처리하지 않습니다.
+        // 그래야 대기 중인 업무 요청을 보존하고 사용자가 재로그인할 수 있습니다.
         return true;
     }
 
@@ -1094,8 +1179,13 @@ internal sealed class PortalWorkflowController
                 return rect.width>0&&rect.height>0&&rect.x>=0&&rect.y>=0
                   &&style?.display!=='none'&&style?.visibility!=='hidden';
               };
-              const isShutdown=element=>compact(element?.innerText||element?.textContent||'')
-                .includes('정보보호를위해시스템을종료');
+              const isShutdown=element=>{
+                const text=compact(element?.innerText||element?.textContent||'');
+                return text.includes('정보보호를위해시스템을종료')
+                  ||text.includes('세션DB정보가없어시스템을종료')
+                  ||text.includes('세션이종료되었습니다')
+                  ||text.includes('다시로그인하신후서비스를이용해주시기바랍니다');
+              };
               const documents=[];
               const visit=currentDocument=>{
                 if(!currentDocument||documents.includes(currentDocument))return;

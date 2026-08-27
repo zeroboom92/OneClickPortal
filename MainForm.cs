@@ -390,6 +390,12 @@ public sealed class MainForm : Form
         if (AppPreferences.IsPortalAutoRefreshEnabled() && _sourceWindow != IntPtr.Zero && _devToolsPort is not null)
         {
             _portalSessionTimer.Start();
+            // 연결 직후 또는 설정 저장 직후에는 첫 타이머 틱까지 기다리지 않고
+            // 이미 임박한 공식 연장 버튼을 즉시 확인합니다.
+            if (!_workflowRunning)
+            {
+                _ = CheckPortalSessionsInBackgroundAsync();
+            }
         }
         else
         {
@@ -620,6 +626,7 @@ public sealed class MainForm : Form
             if (!_isClosing && !IsDisposed && !Disposing)
             {
                 UpdateConnectionControls();
+                UpdateAutoRefreshTimer();
             }
             if (!keepPendingTaskAfterFailure)
             {
@@ -867,6 +874,19 @@ public sealed class MainForm : Form
         catch (OperationCanceledException)
         {
             AppLogger.Info("SessionRefresh", "세션 자동 연장 확인이 취소되었거나 제한 시간을 넘었습니다.");
+        }
+        catch (PortalSessionExpiredException exception)
+        {
+            ShowSourceWindowMaximized();
+            DisconnectBrowser();
+            SetConnectionStatus("나이스 재로그인 필요");
+            AppLogger.Info("SessionRefresh", "나이스 세션이 유효하지 않아 자동 연장을 중단했습니다.");
+            MessageBox.Show(
+                this,
+                exception.Message + "\r\n\r\n나이스에 다시 로그인한 뒤 연결해 주세요.",
+                "나이스 재로그인 필요",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
         }
         catch (Exception exception)
         {
