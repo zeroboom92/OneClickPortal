@@ -30,11 +30,12 @@ internal sealed class PortalWorkflowController
 {
     private const int SessionExtensionThresholdSeconds = 20 * 60;
     private static readonly TimeSpan SessionExtensionRetryDelay = TimeSpan.FromMinutes(1);
-    // 나이스 자체 세션 확인 주기(20분)에 맞춰 추가 요청을 보내며,
-    // 서버가 세션 DB 없음(N)을 반환한 뒤에는 매분 같은 요청을 반복하지 않습니다.
-    private static readonly TimeSpan NiceSessionKeepAliveInterval = TimeSpan.FromMinutes(20);
+    // 나이스 공식 화면은 jQuery XHR로 20분마다 세션 DB를 확인합니다.
+    // 최소화된 탭에서는 화면 타이머가 지연될 수 있으므로 공식 호출과 충돌하지 않는
+    // 15분 주기로 같은 XHR을 보완하고, 성공한 시각만 유지 기준으로 사용합니다.
+    private static readonly TimeSpan NiceSessionKeepAliveInterval = TimeSpan.FromMinutes(15);
     private static readonly ConcurrentDictionary<string, DateTime> LastSessionExtensionAttemptUtc = new();
-    private static readonly ConcurrentDictionary<string, DateTime> LastNiceExtensionAttemptUtc = new();
+    private static readonly ConcurrentDictionary<string, DateTime> LastSuccessfulNiceExtensionUtc = new();
 
     private readonly int _devToolsPort;
     private readonly EducationOffice _educationOffice;
@@ -99,7 +100,8 @@ internal sealed class PortalWorkflowController
     public async Task PrepareApplicationTargetsAsync(CancellationToken cancellationToken = default)
     {
         AppLogger.Info("Connection", "업무 시스템 준비 시작");
-        LastNiceExtensionAttemptUtc.TryRemove(_educationOffice.NiceDomain, out _);
+        LastSuccessfulNiceExtensionUtc.TryRemove(_educationOffice.NiceDomain, out _);
+        LastSessionExtensionAttemptUtc.TryRemove(_educationOffice.NiceDomain, out _);
         LastSessionExtensionAttemptUtc.TryRemove(_educationOffice.EdufineDomain, out _);
         await TryCloseVisiblePortalNoticeAsync(cancellationToken);
 
@@ -177,29 +179,45 @@ internal sealed class PortalWorkflowController
                         "나이스 서버 세션이 종료되었습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
                 }
 
-                if (LastNiceExtensionAttemptUtc.TryGetValue(domain, out var niceLastAttempt)
-                    && DateTime.UtcNow - niceLastAttempt < NiceSessionKeepAliveInterval)
+                if (LastSuccessfulNiceExtensionUtc.TryGetValue(domain, out var lastSuccess)
+                    && DateTime.UtcNow - lastSuccess < NiceSessionKeepAliveInterval)
                 {
                     AppLogger.Info(
                         "SessionRefresh",
-                        $"{systemName}: 백그라운드 세션 유지 요청을 건너뜁니다. (최근 시도 후 20분 미만)");
+                        $"{systemName}: 백그라운드 세션 유지 요청을 건너뜁니다. (최근 성공 후 15분 미만)");
                     return;
                 }
 
-                LastNiceExtensionAttemptUtc[domain] = DateTime.UtcNow;
-                var niceExtensionResult = await session.EvaluateStringAsync(
-                    NiceSessionExtensionRequestScript(),
-                    cancellationToken);
-                if (!string.Equals(niceExtensionResult, "Y", StringComparison.Ordinal))
+                if (LastSessionExtensionAttemptUtc.TryGetValue(domain, out var lastNiceAttempt)
+                    && DateTime.UtcNow - lastNiceAttempt < SessionExtensionRetryDelay)
                 {
                     AppLogger.Info(
                         "SessionRefresh",
-                        $"나이스: 세션 유지 응답이 Y가 아니어서 재로그인이 필요합니다. 응답={niceExtensionResult ?? "null"}");
+                        $"{systemName}: 최근 세션 유지 시도 후 1분이 지나지 않아 다시 요청하지 않습니다.");
+                    return;
+                }
+
+                LastSessionExtensionAttemptUtc[domain] = DateTime.UtcNow;
+                var niceExtensionResult = await session.EvaluateStringAsync(
+                    NiceSessionExtensionRequestScript(),
+                    cancellationToken);
+                if (string.Equals(niceExtensionResult, "Y", StringComparison.Ordinal))
+                {
+                    LastSuccessfulNiceExtensionUtc[domain] = DateTime.UtcNow;
+                    AppLogger.Info("SessionRefresh", "나이스: 공식 XHR 세션 유지와 표시 시간 초기화를 완료했습니다.");
+                    return;
+                }
+
+                if (string.Equals(niceExtensionResult, "N", StringComparison.Ordinal))
+                {
+                    AppLogger.Info("SessionRefresh", "나이스: 서버 세션 DB가 없어 재로그인이 필요합니다.");
                     throw new PortalSessionExpiredException(
                         "나이스 서버 세션이 유효하지 않습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
                 }
 
-                AppLogger.Info("SessionRefresh", "나이스: 백그라운드 세션 유지와 표시 시간 초기화를 완료했습니다.");
+                AppLogger.Info(
+                    "SessionRefresh",
+                    $"나이스: 공식 XHR 세션 유지가 완료되지 않아 1분 뒤 다시 확인합니다. 응답={niceExtensionResult ?? "null"}");
                 return;
             }
 
@@ -439,22 +457,45 @@ internal sealed class PortalWorkflowController
                 &&typeof mainApp.hasAppMethod==='function'
                 &&mainApp.hasAppMethod('setSessionTimerInit');
 
-              const response=await fetch('/sessionExtension.do',{
-                method:'POST',
-                credentials:'same-origin',
-                headers:{
-                  'X-Requested-With':'XMLHttpRequest',
-                  'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'
-                },
-                body:''
+              const ajaxClient=window.jQuery||window.$;
+              if(!ajaxClient||typeof ajaxClient.ajax!=='function')return 'NO_AJAX';
+
+              return await new Promise(resolve=>{
+                let completed=false;
+                const finish=value=>{
+                  if(completed)return;
+                  completed=true;
+                  resolve(value);
+                };
+
+                try{
+                  ajaxClient.ajax({
+                    async:true,
+                    dataType:'text',
+                    type:'post',
+                    url:'/sessionExtension.do',
+                    timeout:8000,
+                    success:result=>{
+                      const normalized=String(result??'').trim();
+                      if(normalized==='\"Y\"'||normalized==='Y'){
+                        if(canResetTimer)mainApp.callAppMethod('setSessionTimerInit');
+                        finish('Y');
+                        return;
+                      }
+
+                      if(normalized==='\"N\"'||normalized==='N'){
+                        finish('N');
+                        return;
+                      }
+
+                      finish(normalized.slice(0,80)||'EMPTY');
+                    },
+                    error:(xhr,status)=>finish('ERROR_'+(status||xhr?.status||'UNKNOWN'))
+                  });
+                }catch{
+                  finish('AJAX_EXCEPTION');
+                }
               });
-              if(!response.ok)return 'HTTP_'+response.status;
-
-              const result=(await response.text()).trim();
-              if(result!=='\"Y\"'&&result!=='Y')return result.slice(0,80)||'EMPTY';
-
-              if(canResetTimer)mainApp.callAppMethod('setSessionTimerInit');
-              return 'Y';
             })()
             """;
     }
