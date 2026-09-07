@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Collections.Concurrent;
 
 namespace BrowserThumbnailPrototype;
 
@@ -20,23 +19,17 @@ internal sealed record WorkflowResult(
 
 internal sealed class PortalSessionExpiredException : InvalidOperationException
 {
-    public PortalSessionExpiredException(string message)
+    public PortalSessionExpiredException(string systemName, string message)
         : base(message)
     {
+        SystemName = systemName;
     }
+
+    public string SystemName { get; }
 }
 
 internal sealed class PortalWorkflowController
 {
-    private const int SessionExtensionThresholdSeconds = 20 * 60;
-    private static readonly TimeSpan SessionExtensionRetryDelay = TimeSpan.FromMinutes(1);
-    // 나이스 공식 화면은 jQuery XHR로 20분마다 세션 DB를 확인합니다.
-    // 최소화된 탭에서는 화면 타이머가 지연될 수 있으므로 공식 호출과 충돌하지 않는
-    // 15분 주기로 같은 XHR을 보완하고, 성공한 시각만 유지 기준으로 사용합니다.
-    private static readonly TimeSpan NiceSessionKeepAliveInterval = TimeSpan.FromMinutes(15);
-    private static readonly ConcurrentDictionary<string, DateTime> LastSessionExtensionAttemptUtc = new();
-    private static readonly ConcurrentDictionary<string, DateTime> LastSuccessfulNiceExtensionUtc = new();
-
     private readonly int _devToolsPort;
     private readonly EducationOffice _educationOffice;
     private readonly Action<string> _reportProgress;
@@ -100,9 +93,6 @@ internal sealed class PortalWorkflowController
     public async Task PrepareApplicationTargetsAsync(CancellationToken cancellationToken = default)
     {
         AppLogger.Info("Connection", "업무 시스템 준비 시작");
-        LastSuccessfulNiceExtensionUtc.TryRemove(_educationOffice.NiceDomain, out _);
-        LastSessionExtensionAttemptUtc.TryRemove(_educationOffice.NiceDomain, out _);
-        LastSessionExtensionAttemptUtc.TryRemove(_educationOffice.EdufineDomain, out _);
         await TryCloseVisiblePortalNoticeAsync(cancellationToken);
 
         _reportProgress("나이스를 미리 여는 중");
@@ -176,117 +166,112 @@ internal sealed class PortalWorkflowController
                         "SessionRefresh",
                         "나이스 세션 종료 안내창을 닫고 세션 확인을 중단합니다.");
                     throw new PortalSessionExpiredException(
+                        "나이스",
                         "나이스 서버 세션이 종료되었습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
                 }
 
-                if (LastSuccessfulNiceExtensionUtc.TryGetValue(domain, out var lastSuccess)
-                    && DateTime.UtcNow - lastSuccess < NiceSessionKeepAliveInterval)
-                {
-                    AppLogger.Info(
-                        "SessionRefresh",
-                        $"{systemName}: 백그라운드 세션 유지 요청을 건너뜁니다. (최근 성공 후 15분 미만)");
-                    return;
-                }
-
-                if (LastSessionExtensionAttemptUtc.TryGetValue(domain, out var lastNiceAttempt)
-                    && DateTime.UtcNow - lastNiceAttempt < SessionExtensionRetryDelay)
-                {
-                    AppLogger.Info(
-                        "SessionRefresh",
-                        $"{systemName}: 최근 세션 유지 시도 후 1분이 지나지 않아 다시 요청하지 않습니다.");
-                    return;
-                }
-
-                LastSessionExtensionAttemptUtc[domain] = DateTime.UtcNow;
                 var niceExtensionResult = await session.EvaluateStringAsync(
-                    NiceSessionExtensionRequestScript(),
+                    NiceServerSessionExtensionScript(),
                     cancellationToken);
                 if (string.Equals(niceExtensionResult, "Y", StringComparison.Ordinal))
                 {
-                    LastSuccessfulNiceExtensionUtc[domain] = DateTime.UtcNow;
-                    AppLogger.Info("SessionRefresh", "나이스: 공식 XHR 세션 유지와 표시 시간 초기화를 완료했습니다.");
+                    AppLogger.Info(
+                        "SessionRefresh",
+                        "나이스: 서버 세션 연장 응답 Y를 확인하고 화면 타이머를 초기화했습니다.");
+                    return;
+                }
+
+                if (string.Equals(niceExtensionResult, "Y_RECENT", StringComparison.Ordinal))
+                {
+                    AppLogger.Info("SessionRefresh", "나이스: 최근 10분 안에 서버 세션 연장 응답 Y를 확인했습니다.");
                     return;
                 }
 
                 if (string.Equals(niceExtensionResult, "N", StringComparison.Ordinal))
                 {
-                    AppLogger.Info("SessionRefresh", "나이스: 서버 세션 DB가 없어 재로그인이 필요합니다.");
+                    AppLogger.Info("SessionRefresh", "나이스: 서버가 세션 DB 없음(N)을 반환했습니다.");
                     throw new PortalSessionExpiredException(
-                        "나이스 서버 세션이 유효하지 않습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
+                        "나이스",
+                        "나이스 서버 세션 DB가 유효하지 않습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
                 }
 
-                AppLogger.Info(
-                    "SessionRefresh",
-                    $"나이스: 공식 XHR 세션 유지가 완료되지 않아 1분 뒤 다시 확인합니다. 응답={niceExtensionResult ?? "null"}");
-                return;
-            }
-
-            var snapshot = await ReadSessionSnapshotAsync(session, cancellationToken);
-            if (snapshot.RemainingSeconds is null)
-            {
-                // K-에듀파인은 화면 프레임이 바뀌는 순간 타이머 문자열을 잠시
-                // 읽지 못할 수 있습니다. 이때도 실제 공식 연장 버튼 하나가
-                // 표시되어 있다면 그 버튼만 눌러 만료 직전의 공백을 보완합니다.
-                if (!isNice && snapshot.ExtensionControlFound)
+                if (string.Equals(niceExtensionResult, "STARTED", StringComparison.Ordinal)
+                    || string.Equals(niceExtensionResult, "IN_FLIGHT", StringComparison.Ordinal))
                 {
                     AppLogger.Info(
                         "SessionRefresh",
-                        $"{systemName}: 타이머는 읽지 못했지만 공식 연장 버튼을 확인해 연장을 시도합니다.");
-                }
-                else
-                {
-                    AppLogger.Info(
-                        "SessionRefresh",
-                        $"{systemName}: 남은 시간 표시를 확인하지 못해 안전하게 건너뜁니다. "
-                        + $"(시간 후보 {snapshot.TimerCandidateCount}, 연장 후보 {snapshot.ExtensionControlCount})");
+                        $"나이스: 서버 세션 연장 요청을 처리 중입니다. 상태={niceExtensionResult}");
                     return;
                 }
-            }
 
-            if (snapshot.RemainingSeconds is int remainingSeconds
-                && remainingSeconds > SessionExtensionThresholdSeconds)
-            {
-                AppLogger.Info("SessionRefresh", $"{systemName}: 남은 시간이 20분을 초과해 연장하지 않습니다.");
-                return;
-            }
+                if (string.Equals(niceExtensionResult, "IN_FLIGHT_STALE", StringComparison.Ordinal))
+                {
+                    AppLogger.Info(
+                        "SessionRefresh",
+                        "나이스: 공식 서버 세션 요청이 10분 넘게 끝나지 않았습니다. 중복 요청은 보내지 않습니다.");
+                    return;
+                }
 
-            if (!isNice && !snapshot.ExtensionControlFound)
-            {
                 AppLogger.Info(
                     "SessionRefresh",
-                    $"{systemName}: 남은 시간이 20분 이하이지만 공식 연장 버튼을 찾지 못해 페이지를 새로고침하지 않습니다.");
+                    $"나이스: 서버 세션 연장에 실패해 1분 뒤 다시 시도합니다. 상태={niceExtensionResult ?? "null"}");
                 return;
             }
 
-            if (LastSessionExtensionAttemptUtc.TryGetValue(domain, out var lastAttempt)
-                && DateTime.UtcNow - lastAttempt < SessionExtensionRetryDelay)
+            var edufineState = await ReadEdufineSessionStateAsync(session, cancellationToken);
+            if (edufineState.Expired || edufineState.RemainingSeconds == 0)
             {
-                AppLogger.Info("SessionRefresh", $"{systemName}: 최근 연장 시도 후 1분이 지나지 않아 다시 누르지 않습니다.");
-                return;
+                AppLogger.Info("SessionRefresh", "K-에듀파인: 실제 사용시간이 0:00이거나 종료 안내가 표시되었습니다.");
+                throw new PortalSessionExpiredException(
+                    "K-에듀파인",
+                    "K-에듀파인 사용시간이 종료되었습니다. Edge에서 K-에듀파인에 다시 로그인한 뒤 연결해 주세요.");
             }
 
-            LastSessionExtensionAttemptUtc[domain] = DateTime.UtcNow;
-            await session.ClickAsync(
-                snapshot.ExtensionControlX!.Value,
-                snapshot.ExtensionControlY!.Value,
+            var edufineExtensionResult = await session.EvaluateStringAsync(
+                EdufineServerSessionCheckScript(),
                 cancellationToken);
-
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(8);
-            while (DateTime.UtcNow < deadline)
+            if (string.Equals(edufineExtensionResult, "Y", StringComparison.Ordinal))
             {
-                await Task.Delay(750, cancellationToken);
-                var confirmed = await ReadSessionSnapshotAsync(session, cancellationToken);
-                if (confirmed.RemainingSeconds is int remaining
-                    && remaining > SessionExtensionThresholdSeconds)
-                {
-                    AppLogger.Info("SessionRefresh", $"{systemName}: 세션을 연장했습니다.");
-                    return;
-                }
+                AppLogger.Info(
+                    "SessionRefresh",
+                    "K-에듀파인: 공식 sessionCheck 콜백에서 서버 생존 응답 Y를 확인했습니다.");
+                return;
+            }
+
+            if (string.Equals(edufineExtensionResult, "Y_RECENT", StringComparison.Ordinal))
+            {
+                AppLogger.Info("SessionRefresh", "K-에듀파인: 최근 5분 안에 서버 생존 응답 Y를 확인했습니다.");
+                return;
+            }
+
+            if (string.Equals(edufineExtensionResult, "N", StringComparison.Ordinal))
+            {
+                AppLogger.Info("SessionRefresh", "K-에듀파인: sessionCheck가 서버 세션 종료를 반환했습니다.");
+                throw new PortalSessionExpiredException(
+                    "K-에듀파인",
+                    "K-에듀파인 서버 세션이 종료되었습니다. Edge에서 K-에듀파인에 다시 로그인한 뒤 연결해 주세요.");
+            }
+
+            if (string.Equals(edufineExtensionResult, "STARTED", StringComparison.Ordinal)
+                || string.Equals(edufineExtensionResult, "IN_FLIGHT", StringComparison.Ordinal))
+            {
+                AppLogger.Info(
+                    "SessionRefresh",
+                    $"K-에듀파인: 공식 sessionCheck 요청을 처리 중입니다. 상태={edufineExtensionResult}");
+                return;
+            }
+
+            if (string.Equals(edufineExtensionResult, "IN_FLIGHT_STALE", StringComparison.Ordinal))
+            {
+                AppLogger.Info(
+                    "SessionRefresh",
+                    "K-에듀파인: 공식 sessionCheck 요청이 5분 넘게 끝나지 않았습니다. 중복 요청은 보내지 않습니다.");
+                return;
             }
 
             AppLogger.Info(
                 "SessionRefresh",
-                $"{systemName}: 연장 버튼은 실행했지만 남은 시간 초기화는 화면에서 확인하지 못했습니다.");
+                $"K-에듀파인: 서버 세션 확인에 실패해 1분 뒤 다시 확인합니다. 상태={edufineExtensionResult ?? "null"}");
         }
         catch (OperationCanceledException)
         {
@@ -302,211 +287,283 @@ internal sealed class PortalWorkflowController
         }
     }
 
-    private static async Task<SessionSnapshot> ReadSessionSnapshotAsync(
+    private static string NiceServerSessionExtensionScript()
+    {
+        return """
+            (()=>{
+              const stateKey='__oneClickNiceServerKeepAliveV2';
+              const successIntervalMs=10*60*1000;
+              const retryIntervalMs=60*1000;
+              const staleRequestMs=10*60*1000;
+              const now=Date.now();
+              const jquery=globalThis.jQuery||globalThis.$;
+              if(!jquery||typeof jquery.ajax!=='function')return 'NO_JQUERY';
+
+              const getState=()=>globalThis[stateKey]||(globalThis[stateKey]={
+                inFlight:false,
+                startedAt:0,
+                completedAt:0,
+                result:null,
+                reported:false,
+                request:null
+              });
+              const mainApp=window.voMainApp;
+              const canResetTimer=!!mainApp
+                &&typeof mainApp.hasAppMethod==='function'
+                &&mainApp.hasAppMethod('setSessionTimerInit')
+                &&typeof mainApp.callAppMethod==='function';
+
+              if(!jquery.__oneClickOriginalAjaxV2){
+                const originalAjax=jquery.ajax;
+                jquery.__oneClickOriginalAjaxV2=originalAjax;
+                jquery.ajax=function(first,second){
+                  const settings=typeof first==='string'
+                    ?Object.assign({},second||{},{url:first})
+                    :Object.assign({},first||{});
+                  const url=String(settings.url||'');
+                  if(!url.includes('/sessionExtension.do'))
+                    return originalAjax.apply(this,arguments);
+
+                  const shared=getState();
+                  if(shared.inFlight)return shared.request;
+
+                  const userSuccess=settings.success;
+                  const userError=settings.error;
+                  const userComplete=settings.complete;
+                  const finish=result=>{
+                    shared.inFlight=false;
+                    shared.result=result;
+                    shared.completedAt=Date.now();
+                    shared.reported=false;
+                    shared.request=null;
+                    if(result==='Y'&&canResetTimer){
+                      try{mainApp.callAppMethod('setSessionTimerInit');}catch{}
+                    }
+                  };
+
+                  shared.inFlight=true;
+                  shared.startedAt=Date.now();
+                  shared.completedAt=0;
+                  shared.result=null;
+                  shared.reported=false;
+
+                  settings.success=function(result,...rest){
+                    const raw=String(result??'').trim();
+                    let normalized=raw;
+                    try{
+                      const parsed=JSON.parse(raw);
+                      if(typeof parsed==='string')normalized=parsed.trim();
+                    }catch{}
+                    finish(normalized==='Y'||normalized==='N'
+                      ?normalized
+                      :'UNEXPECTED_RESPONSE');
+                    if(typeof userSuccess==='function')
+                      userSuccess.apply(this,[result,...rest]);
+                  };
+                  settings.error=function(...args){
+                    finish('NETWORK_ERROR');
+                    if(typeof userError==='function')userError.apply(this,args);
+                  };
+                  settings.complete=function(...args){
+                    if(typeof userComplete==='function')userComplete.apply(this,args);
+                  };
+
+                  try{
+                    const request=originalAjax.call(this,settings);
+                    shared.request=request;
+                    return request;
+                  }catch{
+                    finish('REQUEST_EXCEPTION');
+                    return null;
+                  }
+                };
+              }
+
+              const state=getState();
+              if(state.inFlight)
+                return now-state.startedAt>staleRequestMs?'IN_FLIGHT_STALE':'IN_FLIGHT';
+
+              if(state.completedAt&&state.result){
+                if(state.result==='Y'&&!state.reported){
+                  state.reported=true;
+                  return 'Y';
+                }
+                const waitMs=state.result==='Y'?successIntervalMs:retryIntervalMs;
+                if(now-state.completedAt<waitMs)
+                  return state.result==='Y'?'Y_RECENT':state.result;
+              }
+
+              jquery.ajax({
+                async:true,
+                dataType:'text',
+                type:'post',
+                url:'/sessionExtension.do'
+              });
+              return 'STARTED';
+            })()
+            """;
+    }
+
+    private static async Task<EdufineSessionState> ReadEdufineSessionStateAsync(
         DevToolsSession session,
         CancellationToken cancellationToken)
     {
-        var json = await session.EvaluateStringAsync(SessionInspectionScript(), cancellationToken);
+        var json = await session.EvaluateStringAsync(EdufineSessionStateScript(), cancellationToken);
         if (string.IsNullOrWhiteSpace(json))
         {
-            return new SessionSnapshot(null, false, null, null, 0, 0);
+            return new EdufineSessionState(null, false, null);
         }
 
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
-        double? controlX = null;
-        double? controlY = null;
-        if (root.TryGetProperty("extensionControlRect", out var rect)
-            && rect.ValueKind == JsonValueKind.Object)
-        {
-            controlX = rect.GetProperty("x").GetDouble() + rect.GetProperty("width").GetDouble() / 2;
-            controlY = rect.GetProperty("y").GetDouble() + rect.GetProperty("height").GetDouble() / 2;
-        }
-
-        return new SessionSnapshot(
-            root.TryGetProperty("remainingSeconds", out var remaining) && remaining.ValueKind == JsonValueKind.Number
-                ? remaining.GetInt32()
-                : null,
-            root.TryGetProperty("extensionControlFound", out var found) && found.GetBoolean(),
-            controlX,
-            controlY,
-            root.TryGetProperty("timerCandidateCount", out var timerCount) ? timerCount.GetInt32() : 0,
-            root.TryGetProperty("extensionControlCount", out var controlCount) ? controlCount.GetInt32() : 0);
+        return new EdufineSessionState(
+            root.TryGetProperty("remainingSeconds", out var remaining)
+                && remaining.ValueKind == JsonValueKind.Number
+                    ? remaining.GetInt32()
+                    : null,
+            root.TryGetProperty("expired", out var expired)
+                && expired.ValueKind == JsonValueKind.True,
+            root.TryGetProperty("timerText", out var timerText)
+                && timerText.ValueKind == JsonValueKind.String
+                    ? timerText.GetString()
+                    : null);
     }
 
-    private static string SessionInspectionScript()
+    private static string EdufineSessionStateScript()
     {
         return """
             (()=>{
+              const app=globalThis.nexacro?.getApplication?.()||globalThis.application;
+              const topForm=app?.mainframe?.MainVFrameSet?.TopFrame?.form?.divTopGrp?.form;
+              const timerText=String(topForm?.staUseTime?.text??'').trim();
+              const parseSeconds=value=>{
+                const parts=value.split(':').map(part=>Number(part));
+                if(parts.some(part=>!Number.isFinite(part)||part<0))return null;
+                if(parts.length===2&&parts[1]<60)return parts[0]*60+parts[1];
+                if(parts.length===3&&parts[1]<60&&parts[2]<60)
+                  return parts[0]*3600+parts[1]*60+parts[2];
+                return null;
+              };
               const documents=[];
-              const visit=(currentDocument,offsetX=0,offsetY=0)=>{
-                if(!currentDocument||documents.some(item=>item.document===currentDocument))return;
-                documents.push({document:currentDocument,offsetX,offsetY});
-                for(const frame of currentDocument.querySelectorAll('iframe,frame')){
-                  try{
-                    const childDocument=frame.contentDocument;
-                    if(!childDocument)continue;
-                    const frameRect=frame.getBoundingClientRect();
-                    visit(childDocument,offsetX+frameRect.x,offsetY+frameRect.y);
-                  }catch{}
+              const visit=current=>{
+                if(!current||documents.includes(current))return;
+                documents.push(current);
+                for(const frame of current.querySelectorAll?.('iframe,frame')||[]){
+                  try{visit(frame.contentDocument)}catch{}
                 }
               };
               visit(document);
-              const visible=e=>{
-                if(!e)return false;
-                const r=e.getBoundingClientRect(),s=e.ownerDocument.defaultView?.getComputedStyle(e);
-                return r.width>0&&r.height>0&&r.x>=0&&r.y>=0&&s.display!=='none'&&s.visibility!=='hidden'
-                  &&!e.disabled&&e.getAttribute?.('aria-disabled')!=='true';
-              };
-              const text=e=>((e.innerText||e.textContent||e.value||'')+'').trim();
-              const searchableText=e=>[text(e),e.getAttribute?.('aria-label')||'',e.title||'']
-                .filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
-              const timeKeyword=/(사용\s*시간|남은\s*시간|잔여\s*시간|접속\s*시간|세션\s*(?:만료|종료|남은)|자동\s*로그아웃|로그아웃\s*(?:예정|잔여시간))/;
-              const extensionText=/^(연장|연장하기|시간\s*연장|세션\s*연장|로그인\s*연장|접속\s*연장)$/;
-              const parseSeconds=value=>{
-                const korean=value.match(/(\d{1,3})\s*분(?:\s*(\d{1,2})\s*초)?/);
-                if(korean&&Number(korean[2]||0)<60)return Number(korean[1])*60+Number(korean[2]||0);
-                const three=value.match(/(?:^|\D)(\d{1,2}):(\d{2}):(\d{2})(?:\D|$)/);
-                if(three&&Number(three[2])<60&&Number(three[3])<60)
-                  return Number(three[1])*3600+Number(three[2])*60+Number(three[3]);
-                const two=value.match(/(?:^|\D)(\d{1,3}):(\d{2})(?:\D|$)/);
-                return two&&Number(two[2])<60?Number(two[1])*60+Number(two[2]):null;
-              };
-              const rawTimers=[];
-              const officialEdufineControls=[];
-
-              // K-에듀파인(cpr)과 나이스의 실제 세션 컨트롤을 우선 사용한다.
-              // 두 시스템 모두 화면 문자열보다 생성된 컨트롤 ID가 안정적이다.
-              for(const item of documents){
-                const officialTimers=[
-                  ...item.document.querySelectorAll("[id$='staUseTime'],[id$='optTime'],[id$='lblUseTime'],[aria-label='세션 종료 시간']")
-                ];
-                for(const e of new Set(officialTimers)){
-                  if(!visible(e))continue;
-                  const value=searchableText(e);
-                  const seconds=parseSeconds(value);
-                  if(seconds!==null)rawTimers.push({e,seconds,official:true,offsetX:item.offsetX,offsetY:item.offsetY});
-                }
-                for(const e of item.document.querySelectorAll("[id$='btnUseTimeExtn']")){
-                  if(visible(e))officialEdufineControls.push({e,offsetX:item.offsetX,offsetY:item.offsetY});
-                }
-              }
-
-              if(rawTimers.length===0){
-                for(const item of documents){
-                  for(const e of item.document.querySelectorAll('output,span,div,p,label')){
-                    if(!visible(e))continue;
-                    const value=searchableText(e);
-                    if(value.length>0&&value.length<=180&&timeKeyword.test(value)){
-                      const seconds=parseSeconds(value);
-                      if(seconds!==null)rawTimers.push({e,seconds,official:false,offsetX:item.offsetX,offsetY:item.offsetY});
-                    }
-                  }
-                }
-              }
-
-              const timerCandidates=rawTimers.some(candidate=>candidate.official)
-                ? rawTimers.filter(candidate=>candidate.official)
-                : rawTimers.filter(candidate=>
-                    !rawTimers.some(other=>other!==candidate&&other.e.ownerDocument===candidate.e.ownerDocument
-                      &&candidate.e.contains(other.e)));
-              let extensionControl=null;
-              let extensionControlCount=0;
-              if(officialEdufineControls.length===1){
-                extensionControl=officialEdufineControls[0];
-                extensionControlCount=1;
-              }else if(timerCandidates.length===1){
-                // 나이스는 10분 남았을 때 공식 확인창에 '연장' 버튼을 표시한다.
-                // 확인창은 상단 타이머의 조상이 아닐 수 있어 모든 프레임에서 찾는다.
-                const controls=[];
-                for(const item of documents){
-                  const controlsInDocument=[...new Set([...item.document.querySelectorAll(
-                    'button,a,input[type="button"],input[type="submit"],[role="button"],.cl-button')]
-                    .filter(e=>visible(e)&&extensionText.test(text(e).replace(/\s+/g,' '))))]
-                    .map(e=>({
-                      e,offsetX:item.offsetX,offsetY:item.offsetY
-                    }));
-                  controls.push(...controlsInDocument);
-                }
-                extensionControlCount=controls.length;
-                if(controls.length===1)extensionControl=controls[0];
-              }
-              const rect=extensionControl?.e.getBoundingClientRect();
+              const shutdownVisible=documents.some(current=>{
+                const text=String(current.body?.innerText||current.body?.textContent||'')
+                  .replace(/\s+/g,' ');
+                return text.includes('사용시간이 종료되었습니다');
+              });
+              const remainingSeconds=parseSeconds(timerText);
               return JSON.stringify({
-                remainingSeconds:timerCandidates.length===1?timerCandidates[0].seconds:null,
-                extensionControlFound:!!extensionControl,
-                extensionControlRect:rect?{
-                  x:rect.x+extensionControl.offsetX,
-                  y:rect.y+extensionControl.offsetY,
-                  width:rect.width,
-                  height:rect.height
-                }:null,
-                timerCandidateCount:timerCandidates.length,
-                extensionControlCount
+                timerText:timerText||null,
+                remainingSeconds,
+                expired:shutdownVisible||remainingSeconds===0
               });
             })()
             """;
     }
 
-    private static string NiceSessionExtensionRequestScript()
+    private static string EdufineServerSessionCheckScript()
     {
         return """
-            (async()=>{
-              const mainApp=window.voMainApp;
-              const canResetTimer=!!mainApp
-                &&typeof mainApp.hasAppMethod==='function'
-                &&mainApp.hasAppMethod('setSessionTimerInit');
+            (()=>{
+              const stateKey='__oneClickEdufineServerKeepAliveV1';
+              const successIntervalMs=5*60*1000;
+              const retryIntervalMs=60*1000;
+              const staleRequestMs=5*60*1000;
+              const now=Date.now();
+              const app=globalThis.nexacro?.getApplication?.()||globalThis.application;
+              const topForm=app?.gv_topFrame?.form
+                ||app?.mainframe?.MainVFrameSet?.TopFrame?.form;
+              if(!topForm
+                ||typeof topForm.fnSessionCheck!=='function'
+                ||typeof topForm.fnCallback!=='function')return 'NO_SESSION_METHOD';
 
-              const ajaxClient=window.jQuery||window.$;
-              if(!ajaxClient||typeof ajaxClient.ajax!=='function')return 'NO_AJAX';
+              const getState=()=>globalThis[stateKey]||(globalThis[stateKey]={
+                inFlight:false,
+                startedAt:0,
+                completedAt:0,
+                result:null,
+                reported:false
+              });
 
-              return await new Promise(resolve=>{
-                let completed=false;
-                const finish=value=>{
-                  if(completed)return;
-                  completed=true;
-                  resolve(value);
+              if(!topForm.__oneClickSessionWrappedV1){
+                const originalSessionCheck=topForm.fnSessionCheck;
+                const originalCallback=topForm.fnCallback;
+                topForm.__oneClickSessionWrappedV1=true;
+                topForm.__oneClickOriginalSessionCheckV1=originalSessionCheck;
+                topForm.__oneClickOriginalCallbackV1=originalCallback;
+
+                topForm.fnSessionCheck=function(...args){
+                  const shared=getState();
+                  if(shared.inFlight)return;
+                  shared.inFlight=true;
+                  shared.startedAt=Date.now();
+                  shared.completedAt=0;
+                  shared.result=null;
+                  shared.reported=false;
+                  try{
+                    return originalSessionCheck.apply(this,args);
+                  }catch(error){
+                    shared.inFlight=false;
+                    shared.completedAt=Date.now();
+                    shared.result='REQUEST_EXCEPTION';
+                    throw error;
+                  }
                 };
 
-                try{
-                  ajaxClient.ajax({
-                    async:true,
-                    dataType:'text',
-                    type:'post',
-                    url:'/sessionExtension.do',
-                    timeout:8000,
-                    success:result=>{
-                      const normalized=String(result??'').trim();
-                      if(normalized==='\"Y\"'||normalized==='Y'){
-                        if(canResetTimer)mainApp.callAppMethod('setSessionTimerInit');
-                        finish('Y');
-                        return;
-                      }
+                topForm.fnCallback=function(svcID,errorCode,errorMsg){
+                  if(String(svcID)==='sessionCheck'){
+                    const shared=getState();
+                    shared.inFlight=false;
+                    shared.completedAt=Date.now();
+                    shared.reported=false;
+                    if(Number(errorCode)===0&&String(this.fv_aliveYn)==='Y'){
+                      shared.result='Y';
+                      try{this.fnResetUseEndCeckTimer?.();}catch{}
+                    }else if(Number(errorCode)===0){
+                      shared.result='N';
+                    }else{
+                      shared.result='ERROR_'+String(errorCode??'UNKNOWN');
+                    }
+                  }
+                  return originalCallback.apply(this,arguments);
+                };
+              }
 
-                      if(normalized==='\"N\"'||normalized==='N'){
-                        finish('N');
-                        return;
-                      }
+              const state=getState();
+              if(state.inFlight)
+                return now-state.startedAt>staleRequestMs?'IN_FLIGHT_STALE':'IN_FLIGHT';
 
-                      finish(normalized.slice(0,80)||'EMPTY');
-                    },
-                    error:(xhr,status)=>finish('ERROR_'+(status||xhr?.status||'UNKNOWN'))
-                  });
-                }catch{
-                  finish('AJAX_EXCEPTION');
+              if(state.completedAt&&state.result){
+                if(state.result==='Y'&&!state.reported){
+                  state.reported=true;
+                  return 'Y';
                 }
-              });
+                const waitMs=state.result==='Y'?successIntervalMs:retryIntervalMs;
+                if(now-state.completedAt<waitMs)
+                  return state.result==='Y'?'Y_RECENT':state.result;
+              }
+
+              try{
+                topForm.fnSessionCheck();
+                return 'STARTED';
+              }catch{
+                return getState().result||'REQUEST_EXCEPTION';
+              }
             })()
             """;
     }
 
-    private sealed record SessionSnapshot(
+    private sealed record EdufineSessionState(
         int? RemainingSeconds,
-        bool ExtensionControlFound,
-        double? ExtensionControlX,
-        double? ExtensionControlY,
-        int TimerCandidateCount,
-        int ExtensionControlCount);
+        bool Expired,
+        string? TimerText);
 
     private async Task<WorkflowResult> OpenNiceApplicationAsync(
         string displayName,
@@ -1043,6 +1100,7 @@ internal sealed class PortalWorkflowController
         }
 
         throw new PortalSessionExpiredException(
+            "나이스",
             "나이스 세션이 정보보호 정책에 따라 종료되었습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
     }
 

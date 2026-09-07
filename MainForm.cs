@@ -584,7 +584,7 @@ public sealed class MainForm : Form
         catch (PortalSessionExpiredException exception)
         {
             keepPendingTaskAfterFailure = _pendingTaskKind is not null;
-            AppLogger.Error("Connection", "나이스 세션 종료 상태로 연결 준비를 중단했습니다.", exception);
+            AppLogger.Error("Connection", $"{exception.SystemName} 세션 종료 상태로 연결 준비를 중단했습니다.", exception);
             if (_sourceWindow != IntPtr.Zero && NativeMethods.IsWindow(_sourceWindow))
             {
                 NativeMethods.ShowWindowAsync(_sourceWindow, NativeMethods.SW_MAXIMIZE);
@@ -594,12 +594,12 @@ public sealed class MainForm : Form
             _sourceWindow = IntPtr.Zero;
             _connectedProcessName = null;
             _devToolsPort = null;
-            SetConnectionStatus("나이스 재로그인 필요");
+            SetConnectionStatus($"{exception.SystemName} 재로그인 필요");
             MessageBox.Show(
                 this,
                 exception.Message + "\r\n\r\n"
                 + "다시 로그인한 뒤 연결하면 대기 중인 업무 요청을 이어서 실행합니다.",
-                "나이스 재로그인 필요",
+                $"{exception.SystemName} 재로그인 필요",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
@@ -815,13 +815,13 @@ public sealed class MainForm : Form
             _pendingTaskKind = taskKind;
             ShowSourceWindowMaximized();
             DisconnectBrowser();
-            SetStatus($"나이스 재로그인 필요 · {PortalTaskCatalog.GetName(taskKind)} 요청 대기 중");
-            AppLogger.Info("Workflow", $"{taskKind}: 나이스 재로그인 후 대기 중인 요청을 이어서 실행합니다.");
+            SetStatus($"{exception.SystemName} 재로그인 필요 · {PortalTaskCatalog.GetName(taskKind)} 요청 대기 중");
+            AppLogger.Info("Workflow", $"{taskKind}: {exception.SystemName} 재로그인 후 대기 중인 요청을 이어서 실행합니다.");
             MessageBox.Show(
                 this,
                 exception.Message + "\r\n\r\n"
-                + $"나이스에 다시 로그인한 뒤 연결하면 {PortalTaskCatalog.GetName(taskKind)} 요청을 이어서 실행합니다.",
-                "나이스 재로그인 필요",
+                + $"{exception.SystemName}에 다시 로그인한 뒤 연결하면 {PortalTaskCatalog.GetName(taskKind)} 요청을 이어서 실행합니다.",
+                $"{exception.SystemName} 재로그인 필요",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
@@ -879,12 +879,12 @@ public sealed class MainForm : Form
         {
             ShowSourceWindowMaximized();
             DisconnectBrowser();
-            SetConnectionStatus("나이스 재로그인 필요");
-            AppLogger.Info("SessionRefresh", "나이스 세션이 유효하지 않아 자동 연장을 중단했습니다.");
+            SetConnectionStatus($"{exception.SystemName} 재로그인 필요");
+            AppLogger.Info("SessionRefresh", $"{exception.SystemName} 세션이 유효하지 않아 자동 연장을 중단했습니다.");
             MessageBox.Show(
                 this,
-                exception.Message + "\r\n\r\n나이스에 다시 로그인한 뒤 연결해 주세요.",
-                "나이스 재로그인 필요",
+                exception.Message + $"\r\n\r\n{exception.SystemName}에 다시 로그인한 뒤 연결해 주세요.",
+                $"{exception.SystemName} 재로그인 필요",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
