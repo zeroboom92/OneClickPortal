@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 
 namespace BrowserThumbnailPrototype;
 
@@ -208,7 +208,7 @@ internal sealed class PortalWorkflowController
                 {
                     AppLogger.Info(
                         "SessionRefresh",
-                        "나이스: 공식 서버 세션 요청이 10분 넘게 끝나지 않았습니다. 중복 요청은 보내지 않습니다.");
+                        "나이스: 공식 서버 세션 요청이 2분 넘게 끝나지 않았고 취소 완료를 확인할 수 없습니다. 중복 요청은 보내지 않습니다.");
                     return;
                 }
 
@@ -294,7 +294,7 @@ internal sealed class PortalWorkflowController
               const stateKey='__oneClickNiceServerKeepAliveV2';
               const successIntervalMs=10*60*1000;
               const retryIntervalMs=60*1000;
-              const staleRequestMs=10*60*1000;
+              const staleRequestMs=2*60*1000;
               const now=Date.now();
               const jquery=globalThis.jQuery||globalThis.$;
               if(!jquery||typeof jquery.ajax!=='function')return 'NO_JQUERY';
@@ -307,11 +307,11 @@ internal sealed class PortalWorkflowController
                 reported:false,
                 request:null
               });
-              const mainApp=window.voMainApp;
-              const canResetTimer=!!mainApp
-                &&typeof mainApp.hasAppMethod==='function'
-                &&mainApp.hasAppMethod('setSessionTimerInit')
-                &&typeof mainApp.callAppMethod==='function';
+              const resetTimer=()=>{
+                const mainApp=window.voMainApp;
+                if(mainApp?.hasAppMethod?.('setSessionTimerInit'))
+                  mainApp.callAppMethod('setSessionTimerInit');
+              };
 
               if(!jquery.__oneClickOriginalAjaxV2){
                 const originalAjax=jquery.ajax;
@@ -330,14 +330,17 @@ internal sealed class PortalWorkflowController
                   const userSuccess=settings.success;
                   const userError=settings.error;
                   const userComplete=settings.complete;
+                  let finished=false;
                   const finish=result=>{
+                    if(finished)return;
+                    finished=true;
                     shared.inFlight=false;
                     shared.result=result;
                     shared.completedAt=Date.now();
                     shared.reported=false;
                     shared.request=null;
-                    if(result==='Y'&&canResetTimer){
-                      try{mainApp.callAppMethod('setSessionTimerInit');}catch{}
+                    if(result==='Y'){
+                      try{resetTimer();}catch{}
                     }
                   };
 
@@ -347,7 +350,7 @@ internal sealed class PortalWorkflowController
                   shared.result=null;
                   shared.reported=false;
 
-                  settings.success=function(result,...rest){
+                  const recordSuccess=result=>{
                     const raw=String(result??'').trim();
                     let normalized=raw;
                     try{
@@ -357,6 +360,9 @@ internal sealed class PortalWorkflowController
                     finish(normalized==='Y'||normalized==='N'
                       ?normalized
                       :'UNEXPECTED_RESPONSE');
+                  };
+                  settings.success=function(result,...rest){
+                    recordSuccess(result);
                     if(typeof userSuccess==='function')
                       userSuccess.apply(this,[result,...rest]);
                   };
@@ -370,7 +376,11 @@ internal sealed class PortalWorkflowController
 
                   try{
                     const request=originalAjax.call(this,settings);
-                    shared.request=request;
+                    // beforeSend cancellation can settle jqXHR without option callbacks.
+                    // Deferred handlers also observe completion when site callbacks throw.
+                    if(shared.inFlight)shared.request=request;
+                    request?.done?.(recordSuccess);
+                    request?.fail?.(()=>finish('NETWORK_ERROR'));
                     return request;
                   }catch{
                     finish('REQUEST_EXCEPTION');
@@ -380,13 +390,28 @@ internal sealed class PortalWorkflowController
               }
 
               const state=getState();
-              if(state.inFlight)
-                return now-state.startedAt>staleRequestMs?'IN_FLIGHT_STALE':'IN_FLIGHT';
+              if(state.inFlight){
+                if(now-state.startedAt<=staleRequestMs)return 'IN_FLIGHT';
+                const request=state.request;
+                // Abort the old transport before allowing any retry. Never overlap requests.
+                if(typeof request?.abort!=='function')return 'IN_FLIGHT_STALE';
+                try{request.abort('timeout');}catch{return 'IN_FLIGHT_STALE';}
+                if(state.inFlight){
+                  const settled=request.state?.();
+                  if(settled!=='rejected'&&settled!=='resolved')return 'IN_FLIGHT_STALE';
+                  state.inFlight=false;
+                  state.request=null;
+                  state.result='REQUEST_TIMEOUT';
+                  state.completedAt=now;
+                  state.reported=false;
+                }
+              }
 
               if(state.completedAt&&state.result){
-                if(state.result==='Y'&&!state.reported){
+                if(state.result==='N')return 'N';
+                if(!state.reported){
                   state.reported=true;
-                  return 'Y';
+                  return state.result;
                 }
                 const waitMs=state.result==='Y'?successIntervalMs:retryIntervalMs;
                 if(now-state.completedAt<waitMs)
@@ -395,6 +420,7 @@ internal sealed class PortalWorkflowController
 
               jquery.ajax({
                 async:true,
+                timeout:staleRequestMs,
                 dataType:'text',
                 type:'post',
                 url:'/sessionExtension.do'
@@ -472,7 +498,7 @@ internal sealed class PortalWorkflowController
     {
         return """
             (()=>{
-              const stateKey='__oneClickEdufineServerKeepAliveV1';
+              const stateKey='__oneClickEdufineServerKeepAliveV2';
               const successIntervalMs=5*60*1000;
               const retryIntervalMs=60*1000;
               const staleRequestMs=5*60*1000;
@@ -492,10 +518,43 @@ internal sealed class PortalWorkflowController
                 reported:false
               });
 
-              if(!topForm.__oneClickSessionWrappedV1){
-                const originalSessionCheck=topForm.fnSessionCheck;
-                const originalCallback=topForm.fnCallback;
-                topForm.__oneClickSessionWrappedV1=true;
+              if(!topForm.__oneClickTimerBaselineV2
+                &&typeof topForm.TopFrame_ontimer==='function'
+                &&typeof topForm.removeEventHandler==='function'
+                &&typeof topForm.addEventHandler==='function'){
+                const originalTimer=topForm.TopFrame_ontimer;
+                const originalReset=topForm.fnResetUseEndCeckTimer;
+                const timing={lastTick:null,resetAt:null};
+                const timer=function(obj,event){
+                  if(event.timerid!==this.fv_useEndCeckTimerId)
+                    return originalTimer.apply(this,arguments);
+                  const nowSeconds=Math.round(Date.now()/1000);
+                  // The official handler subtracts time since its previous tick,
+                  // including time before a confirmed reset while the tab was hidden.
+                  if(timing.lastTick!==null&&timing.resetAt>timing.lastTick){
+                    this.fv_nowUseEndTime+=Math.max(0,
+                      Math.min(timing.resetAt,nowSeconds)-timing.lastTick);
+                  }
+                  try{return originalTimer.apply(this,arguments);}
+                  finally{timing.lastTick=nowSeconds;timing.resetAt=null;}
+                };
+                const removed=topForm.removeEventHandler('ontimer',originalTimer,topForm);
+                if(removed>=0){
+                  topForm.addEventHandler('ontimer',timer,topForm);
+                  topForm.TopFrame_ontimer=timer;
+                  topForm.fnResetUseEndCeckTimer=function(){
+                    const result=originalReset.apply(this,arguments);
+                    timing.resetAt=Math.round(Date.now()/1000);
+                    return result;
+                  };
+                  topForm.__oneClickTimerBaselineV2=timing;
+                }
+              }
+
+              if(!topForm.__oneClickSessionWrappedV2){
+                const originalSessionCheck=topForm.__oneClickOriginalSessionCheckV1||topForm.fnSessionCheck;
+                const originalCallback=topForm.__oneClickOriginalCallbackV1||topForm.fnCallback;
+                topForm.__oneClickSessionWrappedV2=true;
                 topForm.__oneClickOriginalSessionCheckV1=originalSessionCheck;
                 topForm.__oneClickOriginalCallbackV1=originalCallback;
 
@@ -541,10 +600,11 @@ internal sealed class PortalWorkflowController
                 return now-state.startedAt>staleRequestMs?'IN_FLIGHT_STALE':'IN_FLIGHT';
 
               if(state.completedAt&&state.result){
-                if(state.result==='Y'&&!state.reported){
+                if(!state.reported){
                   state.reported=true;
-                  return 'Y';
+                  return state.result;
                 }
+                if(state.result==='N')return 'N';
                 const waitMs=state.result==='Y'?successIntervalMs:retryIntervalMs;
                 if(now-state.completedAt<waitMs)
                   return state.result==='Y'?'Y_RECENT':state.result;

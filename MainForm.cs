@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32;
 
 namespace BrowserThumbnailPrototype;
 
@@ -87,6 +88,8 @@ public sealed class MainForm : Form
         };
         FormClosing += (_, _) =>
         {
+            SystemEvents.SessionSwitch -= OnWindowsSessionSwitch;
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             _isClosing = true;
             _healthTimer.Stop();
             _portalSessionTimer.Stop();
@@ -96,6 +99,36 @@ public sealed class MainForm : Form
         _healthTimer.Tick += (_, _) => CheckSourceWindow();
         _healthTimer.Start();
         _portalSessionTimer.Tick += async (_, _) => await CheckPortalSessionsInBackgroundAsync();
+        SystemEvents.SessionSwitch += OnWindowsSessionSwitch;
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+    }
+
+    private void OnWindowsSessionSwitch(object sender, SessionSwitchEventArgs e)
+    {
+        AppLogger.Info("WindowsSession", e.Reason.ToString());
+        if (e.Reason == SessionSwitchReason.SessionUnlock)
+            RequestSessionCheckAfterResume();
+    }
+
+    private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+    {
+        AppLogger.Info("WindowsPower", e.Mode.ToString());
+        if (e.Mode == PowerModes.Resume)
+            RequestSessionCheckAfterResume();
+    }
+
+    private void RequestSessionCheckAfterResume()
+    {
+        if (_isClosing || IsDisposed || !IsHandleCreated) return;
+        try
+        {
+            BeginInvoke(new Action(async () =>
+            {
+                if (!_isClosing && _portalSessionTimer.Enabled)
+                    await CheckPortalSessionsInBackgroundAsync();
+            }));
+        }
+        catch (InvalidOperationException) { /* Window closed during resume. */ }
     }
 
     private void BuildUi()
@@ -658,6 +691,9 @@ public sealed class MainForm : Form
             startInfo.ArgumentList.Add($"--user-data-dir={profilePath}");
             startInfo.ArgumentList.Add("--start-maximized");
             startInfo.ArgumentList.Add("--new-window");
+            startInfo.ArgumentList.Add("--disable-background-timer-throttling");
+            startInfo.ArgumentList.Add("--disable-renderer-backgrounding");
+            startInfo.ArgumentList.Add("--disable-backgrounding-occluded-windows");
             var educationOffice = EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode());
             EdgeIntegrationPolicy.PrepareControlledProfile(educationOffice);
             startInfo.ArgumentList.Add(educationOffice.PortalUri.AbsoluteUri);
