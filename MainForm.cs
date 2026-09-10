@@ -26,6 +26,8 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _healthTimer = new() { Interval = 1000 };
     private readonly System.Windows.Forms.Timer _portalSessionTimer = new() { Interval = 60 * 1000 };
     private readonly SemaphoreSlim _portalOperationGate = new(1, 1);
+    private readonly SystemSleepGuard _systemSleepGuard = new();
+    private readonly HashSet<string> _notifiedExpiredSystems = new(StringComparer.Ordinal);
 
     private IntPtr _sourceWindow;
     private bool _workflowRunning;
@@ -60,6 +62,10 @@ public sealed class MainForm : Form
         AutoScaleDimensions = new SizeF(96F, 96F);
         ApplyWindowOpacity();
         AppLogger.Info("Application", "프로그램 시작");
+        if (!_systemSleepGuard.TryEnable())
+        {
+            AppLogger.Info("Application", "자동 절전 방지를 사용할 수 없습니다.");
+        }
 
         Shown += (_, _) =>
         {
@@ -95,6 +101,7 @@ public sealed class MainForm : Form
             _portalSessionTimer.Stop();
             _workflowCancellationSource?.Cancel();
             _sessionCheckCancellationSource?.Cancel();
+            _systemSleepGuard.Dispose();
         };
         _healthTimer.Tick += (_, _) => CheckSourceWindow();
         _healthTimer.Start();
@@ -900,29 +907,46 @@ public sealed class MainForm : Form
         UpdateConnectionControls();
         try
         {
-            _sessionCheckCancellationSource = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            _sessionCheckCancellationSource = new CancellationTokenSource();
             var controller = new PortalWorkflowController(
                 _devToolsPort.Value,
                 EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode()),
                 _ => { });
-            await controller.ExtendExpiringSessionsAsync(_sessionCheckCancellationSource.Token);
+            var results = await controller.ExtendExpiringSessionsAsync(_sessionCheckCancellationSource.Token);
+            var expired = results.Where(result => result.State == SessionSystemState.Expired).ToArray();
+            var failed = results.Where(result => result.State == SessionSystemState.Failed).ToArray();
+            _notifiedExpiredSystems.IntersectWith(expired.Select(result => result.SystemName));
+
+            if (expired.Length > 0)
+            {
+                var names = string.Join("·", expired.Select(result => result.SystemName));
+                SetConnectionStatus($"{names} 재로그인 필요");
+                var newlyExpired = expired
+                    .Where(result => _notifiedExpiredSystems.Add(result.SystemName))
+                    .ToArray();
+                if (newlyExpired.Length > 0)
+                {
+                    ShowSourceWindowMaximized();
+                    MessageBox.Show(
+                        this,
+                        string.Join("\r\n", newlyExpired.Select(result => result.Message)),
+                        $"{string.Join("·", newlyExpired.Select(result => result.SystemName))} 재로그인 필요",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+            }
+            else if (failed.Length > 0)
+            {
+                SetConnectionStatus($"{string.Join("·", failed.Select(result => result.SystemName))} 확인 실패");
+            }
+            else
+            {
+                SetConnectionStatus($"{_connectedProcessName ?? "브라우저"} 연결됨");
+            }
         }
         catch (OperationCanceledException)
         {
             AppLogger.Info("SessionRefresh", "세션 자동 연장 확인이 취소되었거나 제한 시간을 넘었습니다.");
-        }
-        catch (PortalSessionExpiredException exception)
-        {
-            ShowSourceWindowMaximized();
-            DisconnectBrowser();
-            SetConnectionStatus($"{exception.SystemName} 재로그인 필요");
-            AppLogger.Info("SessionRefresh", $"{exception.SystemName} 세션이 유효하지 않아 자동 연장을 중단했습니다.");
-            MessageBox.Show(
-                this,
-                exception.Message + $"\r\n\r\n{exception.SystemName}에 다시 로그인한 뒤 연결해 주세요.",
-                $"{exception.SystemName} 재로그인 필요",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
         }
         catch (Exception exception)
         {
@@ -1038,6 +1062,7 @@ public sealed class MainForm : Form
         _sourceWindow = IntPtr.Zero;
         _connectedProcessName = null;
         _devToolsPort = null;
+        _notifiedExpiredSystems.Clear();
         if (!_isClosing && !IsDisposed && !Disposing)
         {
             UpdateConnectionControls();

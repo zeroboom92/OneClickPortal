@@ -8,9 +8,9 @@ function setup({cancel=false}={}){
  let now=1000000, resets=0, requests=[];
  const jq={ajax(options){
   let state=cancel?'rejected':'pending',done=[],fail=[];
-  const request={options,done(fn){done.push(fn);if(state==='resolved')fn('Y');return this},
-   fail(fn){fail.push(fn);if(state==='rejected')fn();return this},state:()=>state,
-   abort(){state='rejected';fail.forEach(fn=>fn());},
+  const request={options,done(fn){done.push(fn);if(state==='resolved')fn('Y','success',this);return this},
+   fail(fn){fail.push(fn);if(state==='rejected')fn({},'abort');return this},state:()=>state,
+   abort(reason='abort'){state='rejected';fail.forEach(fn=>fn({},reason));},
    success(value){state='resolved';options.success(value);done.forEach(fn=>fn(value))}};
   requests.push(request);return request;
  }};
@@ -18,13 +18,19 @@ function setup({cancel=false}={}){
  return {run:()=>vm.runInContext(script,context),advance:s=>now+=s*1000,requests,resets:()=>resets,context};
 }
 test('beforeSend cancellation without option callbacks releases in-flight state',()=>{
- const s=setup({cancel:true});assert.equal(s.run(),'STARTED');assert.equal(s.run(),'NETWORK_ERROR');
+ const s=setup({cancel:true});assert.equal(s.run(),'STARTED');assert.equal(s.run(),'REQUEST_ABORTED');
  s.advance(61);assert.equal(s.run(),'STARTED');assert.equal(s.requests.length,2);
 });
 test('hung transport is aborted before retry; retry waits one minute',()=>{
- const s=setup();s.run();s.advance(121);assert.equal(s.run(),'NETWORK_ERROR');
+ const s=setup();s.run();s.advance(121);assert.equal(s.run(),'REQUEST_TIMEOUT');
  assert.equal(s.requests[0].state(),'rejected');assert.equal(s.requests.length,1);
  s.advance(61);assert.equal(s.run(),'STARTED');assert.equal(s.requests.length,2);
+});
+test('duplicate site caller receives the shared request success callback',()=>{
+ const s=setup();s.run();let duplicateSuccess=0,duplicateComplete=0;
+ const shared=s.context.jQuery.ajax({url:'/sessionExtension.do',success(){duplicateSuccess++},complete(){duplicateComplete++}});
+ assert.equal(shared,s.requests[0]);assert.equal(s.requests.length,1);
+ s.requests[0].success('Y');assert.equal(duplicateSuccess,1);assert.equal(duplicateComplete,1);
 });
 test('Y resets once and shares the success interval',()=>{
  const s=setup();s.run();s.requests[0].success('Y');assert.equal(s.resets(),1);

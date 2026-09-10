@@ -28,6 +28,20 @@ internal sealed class PortalSessionExpiredException : InvalidOperationException
     public string SystemName { get; }
 }
 
+internal enum SessionSystemState
+{
+    Healthy,
+    Pending,
+    Failed,
+    Expired,
+    Missing,
+}
+
+internal sealed record SessionSystemResult(
+    string SystemName,
+    SessionSystemState State,
+    string Message);
+
 internal sealed class PortalWorkflowController
 {
     private readonly int _devToolsPort;
@@ -133,26 +147,105 @@ internal sealed class PortalWorkflowController
         AppLogger.Info("Connection", "업무 시스템 준비 완료");
     }
 
-    public async Task ExtendExpiringSessionsAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<SessionSystemResult>> ExtendExpiringSessionsAsync(
+        CancellationToken cancellationToken = default)
     {
-        AppLogger.Info("SessionRefresh", "나이스·K-에듀파인 세션 남은 시간 확인 시작");
+        AppLogger.Info("SessionRefresh", "업무포털·나이스·K-에듀파인 세션 상태 확인 시작");
         var targets = await DevToolsDiscovery.GetTargetsAsync(_devToolsPort, cancellationToken);
-        await ExtendApplicationSessionAsync(targets, "나이스", _educationOffice.NiceDomain, cancellationToken);
-        await ExtendApplicationSessionAsync(targets, "K-에듀파인", _educationOffice.EdufineDomain, cancellationToken);
+        var checks = new[]
+        {
+            RunSessionCheckWithTimeoutAsync(
+                "업무포털",
+                token => CheckPortalSessionAsync(targets, token),
+                cancellationToken),
+            RunSessionCheckWithTimeoutAsync(
+                "나이스",
+                token => ExtendApplicationSessionAsync(targets, "나이스", _educationOffice.NiceDomain, token),
+                cancellationToken),
+            RunSessionCheckWithTimeoutAsync(
+                "K-에듀파인",
+                token => ExtendApplicationSessionAsync(targets, "K-에듀파인", _educationOffice.EdufineDomain, token),
+                cancellationToken),
+        };
+        return await Task.WhenAll(checks);
     }
 
-    private async Task ExtendApplicationSessionAsync(
+    private static async Task<SessionSystemResult> RunSessionCheckWithTimeoutAsync(
+        string systemName,
+        Func<CancellationToken, Task<SessionSystemResult>> check,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutSource.CancelAfter(TimeSpan.FromSeconds(15));
+        try
+        {
+            return await check(timeoutSource.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            AppLogger.Info("SessionRefresh", $"{systemName}: 상태 확인이 15초를 넘었습니다.");
+            return new SessionSystemResult(systemName, SessionSystemState.Failed, $"{systemName} 상태 확인 시간 초과");
+        }
+    }
+
+    private async Task<SessionSystemResult> CheckPortalSessionAsync(
+        IReadOnlyCollection<DevToolsTarget> targets,
+        CancellationToken cancellationToken)
+    {
+        const string systemName = "업무포털";
+        var target = FindPageTarget(targets, _educationOffice.PortalDomain);
+        if (target is null)
+        {
+            AppLogger.Info("SessionRefresh", "업무포털: 열린 화면이 없어 확인을 건너뜁니다.");
+            return new SessionSystemResult(systemName, SessionSystemState.Missing, "업무포털 화면이 열려 있지 않습니다.");
+        }
+
+        try
+        {
+            await using var session = await DevToolsSession.ConnectAsync(_devToolsPort, target.Id, cancellationToken);
+            var state = await session.EvaluateStringAsync(PortalSessionStateScript(), cancellationToken);
+            if (string.Equals(state, "LOGGED_OUT", StringComparison.Ordinal))
+            {
+                AppLogger.Info("SessionRefresh", "업무포털: 로그아웃 안내 화면을 확인했습니다.");
+                return new SessionSystemResult(
+                    systemName,
+                    SessionSystemState.Expired,
+                    "업무포털이 로그아웃되었습니다. Edge에서 다시 로그인해 주세요.");
+            }
+
+            return new SessionSystemResult(systemName, SessionSystemState.Healthy, "업무포털 화면이 정상입니다.");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            AppLogger.Error("SessionRefresh", "업무포털: 세션 상태 확인 실패", exception);
+            return new SessionSystemResult(systemName, SessionSystemState.Failed, "업무포털 상태를 확인하지 못했습니다.");
+        }
+    }
+
+    private async Task<SessionSystemResult> ExtendApplicationSessionAsync(
         IReadOnlyCollection<DevToolsTarget> targets,
         string systemName,
         string domain,
         CancellationToken cancellationToken)
     {
         var isNice = string.Equals(domain, _educationOffice.NiceDomain, StringComparison.OrdinalIgnoreCase);
-        var target = FindPageTarget(targets, domain);
+        var matchingTargets = targets
+            .Where(target => target.Type == "page"
+                && target.Url.Contains(domain, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var target = isNice
+            ? matchingTargets.FirstOrDefault(target => !target.Url.Contains(
+                "/executeNeisLogout.do",
+                StringComparison.OrdinalIgnoreCase)) ?? matchingTargets.FirstOrDefault()
+            : matchingTargets.FirstOrDefault();
         if (target is null)
         {
             AppLogger.Info("SessionRefresh", $"{systemName}: 열린 화면이 없어 확인을 건너뜁니다.");
-            return;
+            return new SessionSystemResult(systemName, SessionSystemState.Missing, $"{systemName} 화면이 열려 있지 않습니다.");
         }
 
         try
@@ -165,9 +258,19 @@ internal sealed class PortalWorkflowController
                     AppLogger.Info(
                         "SessionRefresh",
                         "나이스 세션 종료 안내창을 닫고 세션 확인을 중단합니다.");
-                    throw new PortalSessionExpiredException(
-                        "나이스",
-                        "나이스 서버 세션이 종료되었습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
+                    return new SessionSystemResult(
+                        systemName,
+                        SessionSystemState.Expired,
+                        "나이스 서버 세션이 종료되었습니다. Edge에서 나이스에 다시 로그인해 주세요.");
+                }
+
+                if (await session.EvaluateBooleanAsync(NiceLoggedOutExpression(), cancellationToken: cancellationToken))
+                {
+                    AppLogger.Info("SessionRefresh", "나이스: 로그아웃 화면을 확인했습니다.");
+                    return new SessionSystemResult(
+                        systemName,
+                        SessionSystemState.Expired,
+                        "나이스가 로그아웃되었습니다. Edge에서 나이스에 다시 로그인해 주세요.");
                 }
 
                 var niceExtensionResult = await session.EvaluateStringAsync(
@@ -178,21 +281,22 @@ internal sealed class PortalWorkflowController
                     AppLogger.Info(
                         "SessionRefresh",
                         "나이스: 서버 세션 연장 응답 Y를 확인하고 화면 타이머를 초기화했습니다.");
-                    return;
+                    return new SessionSystemResult(systemName, SessionSystemState.Healthy, "나이스 세션 연장 성공");
                 }
 
                 if (string.Equals(niceExtensionResult, "Y_RECENT", StringComparison.Ordinal))
                 {
                     AppLogger.Info("SessionRefresh", "나이스: 최근 10분 안에 서버 세션 연장 응답 Y를 확인했습니다.");
-                    return;
+                    return new SessionSystemResult(systemName, SessionSystemState.Healthy, "나이스 최근 연장 성공");
                 }
 
                 if (string.Equals(niceExtensionResult, "N", StringComparison.Ordinal))
                 {
                     AppLogger.Info("SessionRefresh", "나이스: 서버가 세션 DB 없음(N)을 반환했습니다.");
-                    throw new PortalSessionExpiredException(
-                        "나이스",
-                        "나이스 서버 세션 DB가 유효하지 않습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
+                    return new SessionSystemResult(
+                        systemName,
+                        SessionSystemState.Expired,
+                        "나이스 서버 세션 DB가 유효하지 않습니다. Edge에서 나이스에 다시 로그인해 주세요.");
                 }
 
                 if (string.Equals(niceExtensionResult, "STARTED", StringComparison.Ordinal)
@@ -201,7 +305,7 @@ internal sealed class PortalWorkflowController
                     AppLogger.Info(
                         "SessionRefresh",
                         $"나이스: 서버 세션 연장 요청을 처리 중입니다. 상태={niceExtensionResult}");
-                    return;
+                    return new SessionSystemResult(systemName, SessionSystemState.Pending, $"나이스 연장 요청 {niceExtensionResult}");
                 }
 
                 if (string.Equals(niceExtensionResult, "IN_FLIGHT_STALE", StringComparison.Ordinal))
@@ -209,22 +313,23 @@ internal sealed class PortalWorkflowController
                     AppLogger.Info(
                         "SessionRefresh",
                         "나이스: 공식 서버 세션 요청이 2분 넘게 끝나지 않았고 취소 완료를 확인할 수 없습니다. 중복 요청은 보내지 않습니다.");
-                    return;
+                    return new SessionSystemResult(systemName, SessionSystemState.Failed, "나이스 연장 요청이 응답하지 않습니다.");
                 }
 
                 AppLogger.Info(
                     "SessionRefresh",
                     $"나이스: 서버 세션 연장에 실패해 1분 뒤 다시 시도합니다. 상태={niceExtensionResult ?? "null"}");
-                return;
+                return new SessionSystemResult(systemName, SessionSystemState.Failed, $"나이스 연장 실패: {niceExtensionResult ?? "null"}");
             }
 
             var edufineState = await ReadEdufineSessionStateAsync(session, cancellationToken);
             if (edufineState.Expired || edufineState.RemainingSeconds == 0)
             {
                 AppLogger.Info("SessionRefresh", "K-에듀파인: 실제 사용시간이 0:00이거나 종료 안내가 표시되었습니다.");
-                throw new PortalSessionExpiredException(
-                    "K-에듀파인",
-                    "K-에듀파인 사용시간이 종료되었습니다. Edge에서 K-에듀파인에 다시 로그인한 뒤 연결해 주세요.");
+                return new SessionSystemResult(
+                    systemName,
+                    SessionSystemState.Expired,
+                    "K-에듀파인 사용시간이 종료되었습니다. Edge에서 K-에듀파인에 다시 로그인해 주세요.");
             }
 
             var edufineExtensionResult = await session.EvaluateStringAsync(
@@ -235,21 +340,22 @@ internal sealed class PortalWorkflowController
                 AppLogger.Info(
                     "SessionRefresh",
                     "K-에듀파인: 공식 sessionCheck 콜백에서 서버 생존 응답 Y를 확인했습니다.");
-                return;
+                return new SessionSystemResult(systemName, SessionSystemState.Healthy, "K-에듀파인 세션 연장 성공");
             }
 
             if (string.Equals(edufineExtensionResult, "Y_RECENT", StringComparison.Ordinal))
             {
                 AppLogger.Info("SessionRefresh", "K-에듀파인: 최근 5분 안에 서버 생존 응답 Y를 확인했습니다.");
-                return;
+                return new SessionSystemResult(systemName, SessionSystemState.Healthy, "K-에듀파인 최근 연장 성공");
             }
 
             if (string.Equals(edufineExtensionResult, "N", StringComparison.Ordinal))
             {
                 AppLogger.Info("SessionRefresh", "K-에듀파인: sessionCheck가 서버 세션 종료를 반환했습니다.");
-                throw new PortalSessionExpiredException(
-                    "K-에듀파인",
-                    "K-에듀파인 서버 세션이 종료되었습니다. Edge에서 K-에듀파인에 다시 로그인한 뒤 연결해 주세요.");
+                return new SessionSystemResult(
+                    systemName,
+                    SessionSystemState.Expired,
+                    "K-에듀파인 서버 세션이 종료되었습니다. Edge에서 K-에듀파인에 다시 로그인해 주세요.");
             }
 
             if (string.Equals(edufineExtensionResult, "STARTED", StringComparison.Ordinal)
@@ -258,7 +364,7 @@ internal sealed class PortalWorkflowController
                 AppLogger.Info(
                     "SessionRefresh",
                     $"K-에듀파인: 공식 sessionCheck 요청을 처리 중입니다. 상태={edufineExtensionResult}");
-                return;
+                return new SessionSystemResult(systemName, SessionSystemState.Pending, $"K-에듀파인 연장 요청 {edufineExtensionResult}");
             }
 
             if (string.Equals(edufineExtensionResult, "IN_FLIGHT_STALE", StringComparison.Ordinal))
@@ -266,32 +372,62 @@ internal sealed class PortalWorkflowController
                 AppLogger.Info(
                     "SessionRefresh",
                     "K-에듀파인: 공식 sessionCheck 요청이 5분 넘게 끝나지 않았습니다. 중복 요청은 보내지 않습니다.");
-                return;
+                return new SessionSystemResult(systemName, SessionSystemState.Failed, "K-에듀파인 연장 요청이 응답하지 않습니다.");
             }
 
             AppLogger.Info(
                 "SessionRefresh",
                 $"K-에듀파인: 서버 세션 확인에 실패해 1분 뒤 다시 확인합니다. 상태={edufineExtensionResult ?? "null"}");
+            return new SessionSystemResult(systemName, SessionSystemState.Failed, $"K-에듀파인 연장 실패: {edufineExtensionResult ?? "null"}");
         }
         catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (PortalSessionExpiredException)
         {
             throw;
         }
         catch (Exception exception)
         {
             AppLogger.Error("SessionRefresh", $"{systemName}: 세션 확인 실패", exception);
+            return new SessionSystemResult(systemName, SessionSystemState.Failed, $"{systemName} 상태를 확인하지 못했습니다.");
         }
+    }
+
+    private static string PortalSessionStateScript()
+    {
+        return """
+            (()=>{
+              if(document.readyState!=='complete')return 'LOADING';
+              const visibleText=current=>{
+                let text=String(current.body?.innerText||'');
+                for(const frame of current.querySelectorAll?.('iframe,frame')||[]){
+                  try{if(frame.contentDocument)text+=' '+visibleText(frame.contentDocument)}catch{}
+                }
+                return text;
+              };
+              const normalized=visibleText(document).replace(/\s+/g,'');
+              return normalized.includes('업무포털을로그아웃하였습니다')
+                ?'LOGGED_OUT':'ACTIVE';
+            })()
+            """;
+    }
+
+    private static string NiceLoggedOutExpression()
+    {
+        return """
+            (()=>{
+              const path=String(location.pathname||'').toLowerCase();
+              const normalized=String(document.body?.innerText||document.body?.textContent||'')
+                .replace(/\s+/g,'');
+              return path.endsWith('/executeneislogout.do')
+                ||normalized.includes('나이스를로그아웃하였습니다');
+            })()
+            """;
     }
 
     private static string NiceServerSessionExtensionScript()
     {
         return """
             (()=>{
-              const stateKey='__oneClickNiceServerKeepAliveV2';
+              const stateKey='__oneClickNiceServerKeepAliveV3';
               const successIntervalMs=10*60*1000;
               const retryIntervalMs=60*1000;
               const staleRequestMs=2*60*1000;
@@ -313,9 +449,9 @@ internal sealed class PortalWorkflowController
                   mainApp.callAppMethod('setSessionTimerInit');
               };
 
-              if(!jquery.__oneClickOriginalAjaxV2){
-                const originalAjax=jquery.ajax;
-                jquery.__oneClickOriginalAjaxV2=originalAjax;
+              if(!jquery.__oneClickOriginalAjaxV3){
+                const originalAjax=jquery.__oneClickOriginalAjaxV2||jquery.ajax;
+                jquery.__oneClickOriginalAjaxV3=originalAjax;
                 jquery.ajax=function(first,second){
                   const settings=typeof first==='string'
                     ?Object.assign({},second||{},{url:first})
@@ -324,12 +460,30 @@ internal sealed class PortalWorkflowController
                   if(!url.includes('/sessionExtension.do'))
                     return originalAjax.apply(this,arguments);
 
-                  const shared=getState();
-                  if(shared.inFlight)return shared.request;
-
                   const userSuccess=settings.success;
                   const userError=settings.error;
                   const userComplete=settings.complete;
+                  const classifyFailure=(xhr,textStatus)=>{
+                    const reason=String(textStatus||'').toLowerCase();
+                    if(reason==='timeout')return 'REQUEST_TIMEOUT';
+                    if(reason==='abort')return 'REQUEST_ABORTED';
+                    const status=Number(xhr?.status||0);
+                    return status>0?`HTTP_${status}`:'NETWORK_ERROR';
+                  };
+                  const shared=getState();
+                  if(shared.inFlight){
+                    const context=settings.context||settings;
+                    shared.request?.done?.(function(data,textStatus,xhr){
+                      if(typeof userSuccess==='function')userSuccess.call(context,data,textStatus,xhr);
+                      if(typeof userComplete==='function')userComplete.call(context,xhr,textStatus);
+                    });
+                    shared.request?.fail?.(function(xhr,textStatus,errorThrown){
+                      if(typeof userError==='function')userError.call(context,xhr,textStatus,errorThrown);
+                      if(typeof userComplete==='function')userComplete.call(context,xhr,textStatus);
+                    });
+                    return shared.request;
+                  }
+
                   let finished=false;
                   const finish=result=>{
                     if(finished)return;
@@ -367,7 +521,7 @@ internal sealed class PortalWorkflowController
                       userSuccess.apply(this,[result,...rest]);
                   };
                   settings.error=function(...args){
-                    finish('NETWORK_ERROR');
+                    finish(classifyFailure(args[0],args[1]));
                     if(typeof userError==='function')userError.apply(this,args);
                   };
                   settings.complete=function(...args){
@@ -380,7 +534,7 @@ internal sealed class PortalWorkflowController
                     // Deferred handlers also observe completion when site callbacks throw.
                     if(shared.inFlight)shared.request=request;
                     request?.done?.(recordSuccess);
-                    request?.fail?.(()=>finish('NETWORK_ERROR'));
+                    request?.fail?.((xhr,textStatus)=>finish(classifyFailure(xhr,textStatus)));
                     return request;
                   }catch{
                     finish('REQUEST_EXCEPTION');
@@ -1154,6 +1308,15 @@ internal sealed class PortalWorkflowController
         DevToolsSession session,
         CancellationToken cancellationToken)
     {
+        if (await session.EvaluateBooleanAsync(
+                NiceLoggedOutExpression(),
+                cancellationToken: cancellationToken))
+        {
+            throw new PortalSessionExpiredException(
+                "나이스",
+                "나이스가 로그아웃되었습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
+        }
+
         if (!await TryCloseVisibleNiceSecurityShutdownDialogAsync(session, cancellationToken))
         {
             return;
