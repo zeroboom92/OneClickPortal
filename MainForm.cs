@@ -28,6 +28,9 @@ public sealed class MainForm : Form
     private readonly SemaphoreSlim _portalOperationGate = new(1, 1);
     private readonly SystemSleepGuard _systemSleepGuard = new();
     private readonly HashSet<string> _notifiedExpiredSystems = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _notifiedRecoverySystems = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _confirmedExpiredSystems = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> _lastSessionSuccessAt = new(StringComparer.Ordinal);
 
     private IntPtr _sourceWindow;
     private bool _workflowRunning;
@@ -41,6 +44,12 @@ public sealed class MainForm : Form
     private int _sourceExtendedStyle;
     private bool _sourceTransparent;
     private PortalTaskKind? _pendingTaskKind;
+    private string? _pendingTaskSystemName;
+    private long _connectionGeneration;
+    private Form? _sessionNoticeForm;
+    private Label? _sessionNoticeLabel;
+    private bool _sessionNoticeIsSessionStatus;
+    private string? _sleepGuardFailureMessage;
 
     public MainForm()
     {
@@ -65,12 +74,18 @@ public sealed class MainForm : Form
         if (!_systemSleepGuard.TryEnable())
         {
             AppLogger.Info("Application", "자동 절전 방지를 사용할 수 없습니다.");
+            _sleepGuardFailureMessage = "자동 절전 방지 요청에 실패했습니다. 로그에서 WindowsPower 오류를 확인해 주세요.";
         }
 
         Shown += (_, _) =>
         {
             PositionAtSavedLocationOrBottomRight();
             RefreshBrowserWindows();
+            if (_sleepGuardFailureMessage is not null)
+            {
+                SetStatus("자동 절전 방지 실패 · WindowsPower 로그 확인 필요");
+                ShowSessionNotice("자동 절전 방지 실패", _sleepGuardFailureMessage);
+            }
         };
         DpiChanged += (_, _) => KeepWindowWithinWorkingArea();
         LocationChanged += (_, _) =>
@@ -567,6 +582,7 @@ public sealed class MainForm : Form
         }
 
         _sourceWindow = selected.Handle;
+        _connectionGeneration++;
         _sourceTransparent = false;
         _sourceExtendedStyle = NativeMethods.GetWindowLong(selected.Handle, NativeMethods.GWL_EXSTYLE);
         _connectedProcessName = selected.DisplayName;
@@ -575,6 +591,7 @@ public sealed class MainForm : Form
         _workflowCancellationSource = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         UpdateConnectionControls();
         var keepPendingTaskAfterFailure = false;
+        SessionNotice? sessionNotice = null;
 
         try
         {
@@ -617,6 +634,7 @@ public sealed class MainForm : Form
         }
         catch (OperationCanceledException) when (_isClosing)
         {
+            _connectionGeneration++;
             _sourceWindow = IntPtr.Zero;
             _connectedProcessName = null;
             _devToolsPort = null;
@@ -624,24 +642,22 @@ public sealed class MainForm : Form
         catch (PortalSessionExpiredException exception)
         {
             keepPendingTaskAfterFailure = _pendingTaskKind is not null;
-            AppLogger.Error("Connection", $"{exception.SystemName} 세션 종료 상태로 연결 준비를 중단했습니다.", exception);
+            _pendingTaskSystemName = keepPendingTaskAfterFailure ? exception.SystemName : null;
+            _confirmedExpiredSystems.Add(exception.SystemName);
+            AppLogger.Error("Connection", $"{exception.SystemName} 세션 종료 상태지만 브라우저 연결과 다른 시스템 감시는 유지합니다.", exception);
             if (_sourceWindow != IntPtr.Zero && NativeMethods.IsWindow(_sourceWindow))
             {
                 NativeMethods.ShowWindowAsync(_sourceWindow, NativeMethods.SW_MAXIMIZE);
                 NativeMethods.SetForegroundWindow(_sourceWindow);
             }
 
-            _sourceWindow = IntPtr.Zero;
-            _connectedProcessName = null;
-            _devToolsPort = null;
             SetConnectionStatus($"{exception.SystemName} 재로그인 필요");
-            MessageBox.Show(
-                this,
-                exception.Message + "\r\n\r\n"
-                + "다시 로그인한 뒤 연결하면 대기 중인 업무 요청을 이어서 실행합니다.",
+            UpdateAutoRefreshTimer();
+            sessionNotice = new SessionNotice(
                 $"{exception.SystemName} 재로그인 필요",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+                exception.Message + "\r\n\r\n"
+                + "다시 로그인하면 다음 세션 점검에서 복구를 확인한 뒤 대기 중인 업무 요청을 한 번만 이어서 실행합니다.",
+                IsSessionStatus: true);
         }
         catch (Exception exception)
         {
@@ -655,6 +671,7 @@ public sealed class MainForm : Form
             _sourceWindow = IntPtr.Zero;
             _connectedProcessName = null;
             _devToolsPort = null;
+            _connectionGeneration++;
             SetConnectionStatus("연결 실패");
             MessageBox.Show(this, exception.Message, "업무 시스템 준비 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
@@ -672,6 +689,11 @@ public sealed class MainForm : Form
             {
                 RunPendingTaskIfAny();
             }
+        }
+
+        if (sessionNotice is not null)
+        {
+            ShowSessionNotice(sessionNotice.Title, sessionNotice.Message, sessionNotice.IsSessionStatus);
         }
     }
 
@@ -742,6 +764,7 @@ public sealed class MainForm : Form
         if (!IsBrowserConnected())
         {
             _pendingTaskKind = requestedTask;
+            _pendingTaskSystemName = null;
             SetStatus($"{PortalTaskCatalog.GetName(requestedTask)} 요청을 받았습니다. Edge에 연결하면 이어서 진행합니다.");
             return;
         }
@@ -781,6 +804,7 @@ public sealed class MainForm : Form
         }
 
         _pendingTaskKind = null;
+        _pendingTaskSystemName = null;
         if (_isClosing || IsDisposed || Disposing || !IsBrowserConnected())
         {
             return;
@@ -813,6 +837,7 @@ public sealed class MainForm : Form
         _workflowCancellationSource = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         UpdateConnectionControls();
         var gateAcquired = false;
+        SessionNotice? sessionNotice = null;
         try
         {
             await _portalOperationGate.WaitAsync(_workflowCancellationSource.Token);
@@ -856,24 +881,23 @@ public sealed class MainForm : Form
         catch (PortalSessionExpiredException exception)
         {
             _pendingTaskKind = taskKind;
+            _pendingTaskSystemName = exception.SystemName;
+            _confirmedExpiredSystems.Add(exception.SystemName);
             ShowSourceWindowMaximized();
-            DisconnectBrowser();
             SetStatus($"{exception.SystemName} 재로그인 필요 · {PortalTaskCatalog.GetName(taskKind)} 요청 대기 중");
-            AppLogger.Info("Workflow", $"{taskKind}: {exception.SystemName} 재로그인 후 대기 중인 요청을 이어서 실행합니다.");
-            MessageBox.Show(
-                this,
-                exception.Message + "\r\n\r\n"
-                + $"{exception.SystemName}에 다시 로그인한 뒤 연결하면 {PortalTaskCatalog.GetName(taskKind)} 요청을 이어서 실행합니다.",
+            AppLogger.Info("Workflow", $"{taskKind}: 전체 브라우저 연결을 유지하고 {exception.SystemName} 재로그인 확인을 기다립니다.");
+            sessionNotice = new SessionNotice(
                 $"{exception.SystemName} 재로그인 필요",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+                exception.Message + "\r\n\r\n"
+                + $"{exception.SystemName}에 다시 로그인하면 다음 점검에서 복구를 확인한 뒤 {PortalTaskCatalog.GetName(taskKind)} 요청을 한 번만 이어서 실행합니다.",
+                IsSessionStatus: true);
         }
         catch (Exception exception)
         {
             AppLogger.Error("Application", "업무 화면 이동 실패", exception);
             ShowSourceWindowMaximized();
             SetStatus($"이동 실패: {exception.Message}");
-            MessageBox.Show(this, exception.Message, "업무 화면 이동 실패", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            sessionNotice = new SessionNotice("업무 화면 이동 실패", exception.Message);
         }
         finally
         {
@@ -889,6 +913,11 @@ public sealed class MainForm : Form
                 UpdateConnectionControls();
             }
         }
+
+        if (sessionNotice is not null)
+        {
+            ShowSessionNotice(sessionNotice.Title, sessionNotice.Message, sessionNotice.IsSessionStatus);
+        }
     }
 
     private async Task CheckPortalSessionsInBackgroundAsync()
@@ -903,37 +932,77 @@ public sealed class MainForm : Form
             return;
         }
 
+        var checkGeneration = _connectionGeneration;
+        var checkPort = _devToolsPort.Value;
+        var checkWindow = _sourceWindow;
         _portalSessionCheckRunning = true;
         UpdateConnectionControls();
+        SessionNotice? sessionNotice = null;
+        PortalTaskKind? taskToResume = null;
+        var maximizeBrowser = false;
+        var closeRecoveredSessionNotice = false;
+        CancellationTokenSource? checkCancellationSource = null;
         try
         {
-            _sessionCheckCancellationSource = new CancellationTokenSource();
+            checkCancellationSource = new CancellationTokenSource();
+            _sessionCheckCancellationSource = checkCancellationSource;
             var controller = new PortalWorkflowController(
-                _devToolsPort.Value,
+                checkPort,
                 EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode()),
                 _ => { });
-            var results = await controller.ExtendExpiringSessionsAsync(_sessionCheckCancellationSource.Token);
+            var results = await controller.ExtendExpiringSessionsAsync(checkCancellationSource.Token);
+            if (checkGeneration != _connectionGeneration
+                || checkPort != _devToolsPort
+                || checkWindow != _sourceWindow)
+            {
+                AppLogger.Info("SessionRefresh", "이전 브라우저 연결에서 도착한 세션 점검 결과를 폐기했습니다.");
+                return;
+            }
+
+            var now = DateTimeOffset.Now;
+            foreach (var result in results)
+            {
+                if (result.State == SessionSystemState.Healthy)
+                {
+                    _lastSessionSuccessAt[result.SystemName] = now;
+                    _confirmedExpiredSystems.Remove(result.SystemName);
+                    _notifiedExpiredSystems.Remove(result.SystemName);
+                    _notifiedRecoverySystems.Remove(result.SystemName);
+                }
+                else if (result.State == SessionSystemState.Expired)
+                {
+                    _confirmedExpiredSystems.Add(result.SystemName);
+                }
+            }
+
             var expired = results.Where(result => result.State == SessionSystemState.Expired).ToArray();
             var failed = results.Where(result => result.State == SessionSystemState.Failed).ToArray();
-            _notifiedExpiredSystems.IntersectWith(expired.Select(result => result.SystemName));
-
-            if (expired.Length > 0)
+            var newlyExpired = expired
+                .Where(result => _notifiedExpiredSystems.Add(result.SystemName))
+                .ToArray();
+            var recoveryRequired = failed
+                .Where(result => result.Message.Contains("종료를 확인할 수 없습니다.", StringComparison.Ordinal)
+                    && _notifiedRecoverySystems.Add(result.SystemName))
+                .ToArray();
+            if (newlyExpired.Length > 0)
             {
-                var names = string.Join("·", expired.Select(result => result.SystemName));
-                SetConnectionStatus($"{names} 재로그인 필요");
-                var newlyExpired = expired
-                    .Where(result => _notifiedExpiredSystems.Add(result.SystemName))
-                    .ToArray();
-                if (newlyExpired.Length > 0)
-                {
-                    ShowSourceWindowMaximized();
-                    MessageBox.Show(
-                        this,
-                        string.Join("\r\n", newlyExpired.Select(result => result.Message)),
-                        $"{string.Join("·", newlyExpired.Select(result => result.SystemName))} 재로그인 필요",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information);
-                }
+                maximizeBrowser = true;
+                sessionNotice = new SessionNotice(
+                    $"{string.Join("·", newlyExpired.Select(result => result.SystemName))} 재로그인 필요",
+                    string.Join("\r\n", newlyExpired.Select(result => result.Message)),
+                    IsSessionStatus: true);
+            }
+            else if (recoveryRequired.Length > 0)
+            {
+                sessionNotice = new SessionNotice(
+                    $"{string.Join("·", recoveryRequired.Select(result => result.SystemName))} 확인 필요",
+                    string.Join("\r\n", recoveryRequired.Select(result => result.Message)),
+                    IsSessionStatus: true);
+            }
+
+            if (_confirmedExpiredSystems.Count > 0)
+            {
+                SetConnectionStatus($"{string.Join("·", _confirmedExpiredSystems)} 재로그인 필요");
             }
             else if (failed.Length > 0)
             {
@@ -942,6 +1011,23 @@ public sealed class MainForm : Form
             else
             {
                 SetConnectionStatus($"{_connectedProcessName ?? "브라우저"} 연결됨");
+            }
+            closeRecoveredSessionNotice = _sessionNoticeIsSessionStatus
+                && _confirmedExpiredSystems.Count == 0
+                && recoveryRequired.Length == 0
+                && failed.All(result => !result.Message.Contains("종료를 확인할 수 없습니다.", StringComparison.Ordinal));
+
+            if (_pendingTaskKind is { } pendingTask
+                && _pendingTaskSystemName is { } pendingSystem
+                && results.Any(result => string.Equals(result.SystemName, pendingSystem, StringComparison.Ordinal)
+                    && result.State == SessionSystemState.Healthy))
+            {
+                _pendingTaskKind = null;
+                _pendingTaskSystemName = null;
+                taskToResume = pendingTask;
+                AppLogger.Info(
+                    "Workflow",
+                    $"{pendingSystem}의 실제 세션 복구를 확인해 대기 중인 {PortalTaskCatalog.GetName(pendingTask)} 요청을 한 번 재개합니다.");
             }
         }
         catch (OperationCanceledException)
@@ -954,8 +1040,11 @@ public sealed class MainForm : Form
         }
         finally
         {
-            _sessionCheckCancellationSource?.Dispose();
-            _sessionCheckCancellationSource = null;
+            if (ReferenceEquals(_sessionCheckCancellationSource, checkCancellationSource))
+            {
+                _sessionCheckCancellationSource = null;
+            }
+            checkCancellationSource?.Dispose();
             _portalSessionCheckRunning = false;
             _portalOperationGate.Release();
             if (!_isClosing && !IsDisposed && !Disposing)
@@ -963,7 +1052,95 @@ public sealed class MainForm : Form
                 UpdateConnectionControls();
             }
         }
+
+        if (maximizeBrowser)
+        {
+            ShowSourceWindowMaximized();
+        }
+        if (sessionNotice is not null)
+        {
+            ShowSessionNotice(sessionNotice.Title, sessionNotice.Message, sessionNotice.IsSessionStatus);
+        }
+        else if (closeRecoveredSessionNotice && _sessionNoticeForm is { IsDisposed: false } recoveredNotice)
+        {
+            recoveredNotice.Close();
+        }
+        if (taskToResume is { } pendingTaskToResume
+            && !_isClosing && !IsDisposed && !Disposing && IsBrowserConnected())
+        {
+            BeginInvoke(() => _ = RunWorkflowAsync(pendingTaskToResume));
+        }
     }
+
+    private void ShowSessionNotice(string title, string message, bool sessionStatus = false)
+    {
+        if (_isClosing || IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        if (_sessionNoticeForm is { IsDisposed: false } existing
+            && _sessionNoticeLabel is not null)
+        {
+            existing.Text = title;
+            _sessionNoticeLabel.Text = message;
+            _sessionNoticeIsSessionStatus = sessionStatus;
+            if (!existing.Visible)
+            {
+                existing.Show(this);
+            }
+            existing.BringToFront();
+            return;
+        }
+
+        var notice = new Form
+        {
+            Text = title,
+            StartPosition = FormStartPosition.Manual,
+            FormBorderStyle = FormBorderStyle.FixedToolWindow,
+            ShowInTaskbar = false,
+            TopMost = TopMost,
+            ClientSize = new Size(440, 150),
+            MinimizeBox = false,
+            MaximizeBox = false,
+        };
+        var workingArea = Screen.FromControl(this).WorkingArea;
+        notice.Location = new Point(
+            Math.Max(workingArea.Left, workingArea.Right - notice.Width - 18),
+            Math.Max(workingArea.Top, workingArea.Bottom - notice.Height - Height - 28));
+
+        var label = new Label
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(16, 14, 16, 8),
+            Text = message,
+            TextAlign = ContentAlignment.MiddleLeft,
+        };
+        var closeButton = new Button
+        {
+            Dock = DockStyle.Bottom,
+            Height = 34,
+            Text = "확인",
+        };
+        closeButton.Click += (_, _) => notice.Close();
+        notice.Controls.Add(label);
+        notice.Controls.Add(closeButton);
+        notice.FormClosed += (_, _) =>
+        {
+            if (ReferenceEquals(_sessionNoticeForm, notice))
+            {
+                _sessionNoticeForm = null;
+                _sessionNoticeLabel = null;
+                _sessionNoticeIsSessionStatus = false;
+            }
+        };
+        _sessionNoticeForm = notice;
+        _sessionNoticeLabel = label;
+        _sessionNoticeIsSessionStatus = sessionStatus;
+        notice.Show(this);
+    }
+
+    private sealed record SessionNotice(string Title, string Message, bool IsSessionStatus = false);
 
     private static string? FindEdgeExecutable()
     {
@@ -1054,6 +1231,7 @@ public sealed class MainForm : Form
 
     private void DisconnectBrowser()
     {
+        _connectionGeneration++;
         _workflowCancellationSource?.Cancel();
         _sessionCheckCancellationSource?.Cancel();
         _portalSessionTimer.Stop();
@@ -1063,6 +1241,9 @@ public sealed class MainForm : Form
         _connectedProcessName = null;
         _devToolsPort = null;
         _notifiedExpiredSystems.Clear();
+        _notifiedRecoverySystems.Clear();
+        _confirmedExpiredSystems.Clear();
+        _lastSessionSuccessAt.Clear();
         if (!_isClosing && !IsDisposed && !Disposing)
         {
             UpdateConnectionControls();

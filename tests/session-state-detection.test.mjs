@@ -11,7 +11,14 @@ test('portal logout message is recognized only after loading completes',()=>{
  const complete={readyState:'complete',body:{innerText:'정보보호를 위해 업무포털을 로그아웃하였습니다.'},querySelectorAll:()=>[]};
  assert.equal(vm.runInNewContext(script,{document:complete}),'LOGGED_OUT');
  assert.equal(vm.runInNewContext(script,{document:{...complete,readyState:'loading'}}),'LOADING');
- assert.equal(vm.runInNewContext(script,{document:{...complete,body:{innerText:'업무포털 메인'}}}),'ACTIVE');
+ assert.equal(vm.runInNewContext(script,{document:{...complete,body:{innerText:'업무포털 메인'}}}),'OFFICIAL_BUTTON_NOT_VISIBLE');
+});
+
+test('hidden frame logout text does not expire the visible portal',()=>{
+ const script=extract('PortalSessionStateScript');
+ const hiddenFrame={hidden:true,contentDocument:{body:{innerText:'업무포털을 로그아웃하였습니다.'},querySelectorAll:()=>[]}};
+ const document={readyState:'complete',body:{innerText:'업무포털 메인'},querySelectorAll:selector=>selector==='iframe,frame'?[hiddenFrame]:[]};
+ assert.equal(vm.runInNewContext(script,{document}),'OFFICIAL_BUTTON_NOT_VISIBLE');
 });
 
 test('nice exact logout route is recognized without broad logout substring matching',()=>{

@@ -1,81 +1,168 @@
+using Microsoft.Win32.SafeHandles;
 using System.Runtime.InteropServices;
 
 namespace BrowserThumbnailPrototype;
 
 internal sealed class SystemSleepGuard : IDisposable
 {
-    private const uint PowerRequestSystemRequired = 0;
-    private IntPtr _requestHandle;
+    private readonly object _sync = new();
+    private SafeFileHandle? _requestHandle;
     private bool _requestSet;
+    private bool _disposed;
 
     public bool TryEnable()
     {
-        if (_requestSet) return true;
-
-        var reason = new ReasonContext
+        lock (_sync)
         {
-            Version = 0,
-            Flags = 1,
-            SimpleReasonString = "원클릭업무포털 세션 유지",
-        };
+            if (_disposed)
+            {
+                AppLogger.Info("WindowsPower", "종료된 자동 절전 방지 요청은 다시 시작할 수 없습니다.");
+                return false;
+            }
 
-        _requestHandle = PowerCreateRequest(ref reason);
-        if (_requestHandle == IntPtr.Zero || _requestHandle == new IntPtr(-1))
-        {
-            _requestHandle = IntPtr.Zero;
-            AppLogger.Info("WindowsPower", $"자동 절전 방지 요청 생성 실패: {Marshal.GetLastWin32Error()}");
-            return false;
+            if (_requestSet)
+            {
+                return true;
+            }
+
+            var expectedContextSize = IntPtr.Size == 8 ? 32 : 24;
+            var actualContextSize = Marshal.SizeOf<ReasonContext>();
+            if (actualContextSize != expectedContextSize)
+            {
+                AppLogger.Info(
+                    "WindowsPower",
+                    $"REASON_CONTEXT ABI 크기 불일치: actual={actualContextSize}, expected={expectedContextSize}");
+                return false;
+            }
+
+            var reasonString = Marshal.StringToHGlobalUni("원클릭업무포털 세션 유지");
+            try
+            {
+                var reason = new ReasonContext
+                {
+                    Version = PowerRequestContextVersion,
+                    Flags = PowerRequestContextSimpleString,
+                    Reason = new ReasonContextUnion { SimpleReasonString = reasonString },
+                };
+
+                var requestHandle = PowerCreateRequest(ref reason);
+                if (requestHandle.IsInvalid)
+                {
+                    var error = Marshal.GetLastWin32Error();
+                    requestHandle.Dispose();
+                    AppLogger.Info("WindowsPower", $"자동 절전 방지 요청 생성 실패: Win32={error}");
+                    return false;
+                }
+
+                if (!PowerSetRequest(requestHandle, PowerRequestType.SystemRequired))
+                {
+                    var error = Marshal.GetLastWin32Error();
+                    requestHandle.Dispose();
+                    AppLogger.Info("WindowsPower", $"SYSTEM 자동 절전 방지 요청 설정 실패: Win32={error}");
+                    return false;
+                }
+
+                _requestHandle = requestHandle;
+                _requestSet = true;
+                AppLogger.Info("WindowsPower", "프로그램 실행 중 SYSTEM 자동 절전 방지 요청을 시작했습니다.");
+                return true;
+            }
+            catch (Exception exception)
+            {
+                AppLogger.Error("WindowsPower", "자동 절전 방지 요청 초기화 실패", exception);
+                return false;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(reasonString);
+            }
         }
-
-        if (!PowerSetRequest(_requestHandle, PowerRequestSystemRequired))
-        {
-            AppLogger.Info("WindowsPower", $"자동 절전 방지 요청 설정 실패: {Marshal.GetLastWin32Error()}");
-            CloseHandle(_requestHandle);
-            _requestHandle = IntPtr.Zero;
-            return false;
-        }
-
-        _requestSet = true;
-        AppLogger.Info("WindowsPower", "프로그램 실행 중 자동 절전 방지를 시작했습니다.");
-        return true;
     }
 
     public void Dispose()
     {
-        if (_requestHandle == IntPtr.Zero) return;
-
-        if (_requestSet && !PowerClearRequest(_requestHandle, PowerRequestSystemRequired))
+        lock (_sync)
         {
-            AppLogger.Info("WindowsPower", $"자동 절전 방지 요청 해제 실패: {Marshal.GetLastWin32Error()}");
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            var requestHandle = _requestHandle;
+            _requestHandle = null;
+            if (requestHandle is null)
+            {
+                return;
+            }
+
+            if (_requestSet)
+            {
+                if (PowerClearRequest(requestHandle, PowerRequestType.SystemRequired))
+                {
+                    AppLogger.Info("WindowsPower", "SYSTEM 자동 절전 방지 요청을 해제했습니다.");
+                }
+                else
+                {
+                    AppLogger.Info(
+                        "WindowsPower",
+                        $"SYSTEM 자동 절전 방지 요청 해제 실패: Win32={Marshal.GetLastWin32Error()}");
+                }
+            }
+
+            _requestSet = false;
+            requestHandle.Dispose();
         }
 
-        CloseHandle(_requestHandle);
-        _requestHandle = IntPtr.Zero;
-        _requestSet = false;
-        AppLogger.Info("WindowsPower", "자동 절전 방지를 종료했습니다.");
+        GC.SuppressFinalize(this);
     }
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private const uint PowerRequestContextVersion = 0;
+    private const uint PowerRequestContextSimpleString = 0x1;
+
+    private enum PowerRequestType
+    {
+        DisplayRequired = 0,
+        SystemRequired = 1,
+        AwayModeRequired = 2,
+        ExecutionRequired = 3,
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct ReasonContext
     {
         public uint Version;
         public uint Flags;
-        [MarshalAs(UnmanagedType.LPWStr)]
-        public string SimpleReasonString;
+        public ReasonContextUnion Reason;
     }
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr PowerCreateRequest(ref ReasonContext context);
+    [StructLayout(LayoutKind.Explicit)]
+    private struct ReasonContextUnion
+    {
+        [FieldOffset(0)]
+        public DetailedReasonContext Detailed;
+
+        [FieldOffset(0)]
+        public IntPtr SimpleReasonString;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DetailedReasonContext
+    {
+        public IntPtr LocalizedReasonModule;
+        public uint LocalizedReasonId;
+        public uint ReasonStringCount;
+        public IntPtr ReasonStrings;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern SafeFileHandle PowerCreateRequest(ref ReasonContext context);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool PowerSetRequest(IntPtr powerRequest, uint requestType);
+    private static extern bool PowerSetRequest(SafeFileHandle powerRequest, PowerRequestType requestType);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool PowerClearRequest(IntPtr powerRequest, uint requestType);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CloseHandle(IntPtr handle);
+    private static extern bool PowerClearRequest(SafeFileHandle powerRequest, PowerRequestType requestType);
 }

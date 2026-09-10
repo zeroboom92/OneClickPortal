@@ -213,7 +213,44 @@ internal sealed class PortalWorkflowController
                     "업무포털이 로그아웃되었습니다. Edge에서 다시 로그인해 주세요.");
             }
 
-            return new SessionSystemResult(systemName, SessionSystemState.Healthy, "업무포털 화면이 정상입니다.");
+            if (string.Equals(state, "HTTP_OK_OFFICIAL_CLICK", StringComparison.Ordinal)
+                || string.Equals(state, "HTTP_OK_RECENT", StringComparison.Ordinal))
+            {
+                AppLogger.Info(
+                    "SessionRefresh",
+                    "업무포털: 공식 세션 시간 초기화 버튼의 요청이 HTTP 성공으로 완료되었습니다.");
+                return new SessionSystemResult(
+                    systemName,
+                    SessionSystemState.Healthy,
+                    "업무포털 공식 연장 요청 HTTP 성공");
+            }
+
+            if (string.Equals(state, "STARTED", StringComparison.Ordinal)
+                || string.Equals(state, "IN_FLIGHT", StringComparison.Ordinal)
+                || string.Equals(state, "LOADING", StringComparison.Ordinal))
+            {
+                AppLogger.Info("SessionRefresh", $"업무포털: 공식 세션 확인 진행 중. 상태={state}");
+                return new SessionSystemResult(systemName, SessionSystemState.Pending, $"업무포털 확인 {state}");
+            }
+
+            if (string.Equals(state, "RECOVERY_REQUIRED", StringComparison.Ordinal))
+            {
+                AppLogger.Info(
+                    "SessionRefresh",
+                    "업무포털: 공식 연장 요청이 15초 넘게 끝나지 않아 종료 여부를 확인할 수 없습니다. 새 클릭은 보내지 않습니다.");
+                return new SessionSystemResult(
+                    systemName,
+                    SessionSystemState.Failed,
+                    "업무포털 연장 요청의 종료를 확인할 수 없습니다. 업무포털 화면을 확인하거나 다시 로그인해 주세요.");
+            }
+
+            AppLogger.Info(
+                "SessionRefresh",
+                $"업무포털: 화면은 열려 있으나 공식 연장 성공을 확인하지 못했습니다. 상태={state ?? "null"}");
+            return new SessionSystemResult(
+                systemName,
+                SessionSystemState.Failed,
+                $"업무포털 공식 연장 확인 실패: {state ?? "null"}");
         }
         catch (OperationCanceledException)
         {
@@ -300,7 +337,8 @@ internal sealed class PortalWorkflowController
                 }
 
                 if (string.Equals(niceExtensionResult, "STARTED", StringComparison.Ordinal)
-                    || string.Equals(niceExtensionResult, "IN_FLIGHT", StringComparison.Ordinal))
+                    || string.Equals(niceExtensionResult, "IN_FLIGHT", StringComparison.Ordinal)
+                    || string.Equals(niceExtensionResult, "LEGACY_IN_FLIGHT", StringComparison.Ordinal))
                 {
                     AppLogger.Info(
                         "SessionRefresh",
@@ -308,12 +346,31 @@ internal sealed class PortalWorkflowController
                     return new SessionSystemResult(systemName, SessionSystemState.Pending, $"나이스 연장 요청 {niceExtensionResult}");
                 }
 
-                if (string.Equals(niceExtensionResult, "IN_FLIGHT_STALE", StringComparison.Ordinal))
+                if (string.Equals(niceExtensionResult, "IN_FLIGHT_STALE", StringComparison.Ordinal)
+                    || string.Equals(niceExtensionResult, "LEGACY_IN_FLIGHT_STALE", StringComparison.Ordinal))
                 {
                     AppLogger.Info(
                         "SessionRefresh",
                         "나이스: 공식 서버 세션 요청이 2분 넘게 끝나지 않았고 취소 완료를 확인할 수 없습니다. 중복 요청은 보내지 않습니다.");
                     return new SessionSystemResult(systemName, SessionSystemState.Failed, "나이스 연장 요청이 응답하지 않습니다.");
+                }
+
+                if (string.Equals(niceExtensionResult, "AUTH_RESPONSE", StringComparison.Ordinal))
+                {
+                    var loggedOut = await session.EvaluateBooleanAsync(
+                        NiceLoggedOutExpression(),
+                        cancellationToken: cancellationToken);
+                    AppLogger.Info(
+                        "SessionRefresh",
+                        loggedOut
+                            ? "나이스: 연장 요청에서 인증 화면 응답 후 로그아웃 화면을 다시 확인했습니다."
+                            : "나이스: 연장 요청이 로그인 HTML 또는 인증 응답을 반환했으나 현재 화면에서는 로그아웃을 확정하지 못했습니다.");
+                    return new SessionSystemResult(
+                        systemName,
+                        loggedOut ? SessionSystemState.Expired : SessionSystemState.Failed,
+                        loggedOut
+                            ? "나이스가 로그아웃되었습니다. Edge에서 나이스에 다시 로그인해 주세요."
+                            : "나이스 연장 요청에서 인증 응답이 반환되었습니다. 로그인 상태를 확인해 주세요.");
                 }
 
                 AppLogger.Info(
@@ -359,7 +416,8 @@ internal sealed class PortalWorkflowController
             }
 
             if (string.Equals(edufineExtensionResult, "STARTED", StringComparison.Ordinal)
-                || string.Equals(edufineExtensionResult, "IN_FLIGHT", StringComparison.Ordinal))
+                || string.Equals(edufineExtensionResult, "IN_FLIGHT", StringComparison.Ordinal)
+                || string.Equals(edufineExtensionResult, "LEGACY_IN_FLIGHT", StringComparison.Ordinal))
             {
                 AppLogger.Info(
                     "SessionRefresh",
@@ -367,12 +425,21 @@ internal sealed class PortalWorkflowController
                 return new SessionSystemResult(systemName, SessionSystemState.Pending, $"K-에듀파인 연장 요청 {edufineExtensionResult}");
             }
 
-            if (string.Equals(edufineExtensionResult, "IN_FLIGHT_STALE", StringComparison.Ordinal))
+            if (string.Equals(edufineExtensionResult, "RECOVERY_REQUIRED", StringComparison.Ordinal)
+                || string.Equals(edufineExtensionResult, "LEGACY_IN_FLIGHT_STALE", StringComparison.Ordinal)
+                || string.Equals(edufineExtensionResult, "OWNERSHIP_UNCONFIRMED", StringComparison.Ordinal))
             {
                 AppLogger.Info(
                     "SessionRefresh",
-                    "K-에듀파인: 공식 sessionCheck 요청이 5분 넘게 끝나지 않았습니다. 중복 요청은 보내지 않습니다.");
-                return new SessionSystemResult(systemName, SessionSystemState.Failed, "K-에듀파인 연장 요청이 응답하지 않습니다.");
+                    string.Equals(edufineExtensionResult, "OWNERSHIP_UNCONFIRMED", StringComparison.Ordinal)
+                        ? "K-에듀파인: 공식 sessionCheck 요청에 요청 식별자가 적용됐는지 확인할 수 없어 자동 재전송을 중단했습니다."
+                        : string.Equals(edufineExtensionResult, "LEGACY_IN_FLIGHT_STALE", StringComparison.Ordinal)
+                            ? "K-에듀파인: 이전 V2 sessionCheck 요청이 5분 넘게 끝나지 않아 새 요청을 중단했습니다."
+                            : "K-에듀파인: 공식 sessionCheck 요청이 5분 넘게 끝나지 않아 종료 여부를 확인할 수 없습니다. 자동 재전송을 중단했습니다.");
+                return new SessionSystemResult(
+                    systemName,
+                    SessionSystemState.Failed,
+                    "K-에듀파인 연장 요청의 종료를 확인할 수 없습니다. K-에듀파인 화면을 확인하거나 다시 로그인해 주세요.");
             }
 
             AppLogger.Info(
@@ -396,16 +463,75 @@ internal sealed class PortalWorkflowController
         return """
             (()=>{
               if(document.readyState!=='complete')return 'LOADING';
+              const visible=element=>{
+                if(!element||element.hidden||element.getAttribute?.('aria-hidden')==='true')return false;
+                const style=globalThis.getComputedStyle?.(element);
+                return !style||(style.display!=='none'&&style.visibility!=='hidden');
+              };
               const visibleText=current=>{
                 let text=String(current.body?.innerText||'');
                 for(const frame of current.querySelectorAll?.('iframe,frame')||[]){
-                  try{if(frame.contentDocument)text+=' '+visibleText(frame.contentDocument)}catch{}
+                  try{if(visible(frame)&&frame.contentDocument)text+=' '+visibleText(frame.contentDocument)}catch{}
                 }
                 return text;
               };
               const normalized=visibleText(document).replace(/\s+/g,'');
-              return normalized.includes('업무포털을로그아웃하였습니다')
-                ?'LOGGED_OUT':'ACTIVE';
+              if(normalized.includes('업무포털을로그아웃하였습니다'))return 'LOGGED_OUT';
+
+              const stateKey='__oneClickPortalOfficialKeepAliveV1';
+              const endpoint='/bpm_lgn_lg00_102.do';
+              const now=Date.now();
+              const state=globalThis[stateKey]||(globalThis[stateKey]={
+                inFlight:false,startedAt:0,completedAt:0,result:null,reported:false
+              });
+              if(state.inFlight){
+                if(now-state.startedAt<=15*1000)return 'IN_FLIGHT';
+                state.recoveryRequired=true;
+                return 'RECOVERY_REQUIRED';
+              }
+              if(state.recoveryRequired)return 'RECOVERY_REQUIRED';
+              if(state.completedAt&&state.result){
+                if(!state.reported){state.reported=true;return state.result;}
+                if(state.result==='HTTP_OK_OFFICIAL_CLICK'&&now-state.completedAt<10*60*1000)
+                  return 'HTTP_OK_RECENT';
+                if(now-state.completedAt<60*1000)return state.result;
+              }
+
+              const button=[...document.querySelectorAll('button.btn.btn-refresh[title="세션 시간 초기화"]')]
+                .find(visible);
+              if(!button)return 'OFFICIAL_BUTTON_NOT_VISIBLE';
+              const jquery=globalThis.jQuery||globalThis.$;
+              if(typeof jquery!=='function'||typeof jquery(document)?.on!=='function')return 'NO_JQUERY';
+              if(!globalThis.__oneClickPortalAjaxObserverV1){
+                jquery(document).on('ajaxComplete.oneClickPortalKeepAlive',(event,xhr,settings)=>{
+                  const current=globalThis[stateKey];
+                  const requestPath=String(settings?.url||'').split('?')[0]
+                    .replace(/^https?:\/\/[^/]+/i,'');
+                  if(!current?.inFlight||requestPath!==endpoint)return;
+                  const status=Number(xhr?.status||0);
+                  current.inFlight=false;
+                  current.recoveryRequired=false;
+                  current.completedAt=Date.now();
+                  current.result=status>=200&&status<300
+                    ?'HTTP_OK_OFFICIAL_CLICK'
+                    :status>0?`HTTP_${status}`:'NETWORK_ERROR';
+                  current.reported=false;
+                });
+                globalThis.__oneClickPortalAjaxObserverV1=true;
+              }
+              state.inFlight=true;
+              state.startedAt=now;
+              state.completedAt=0;
+              state.result=null;
+              state.reported=false;
+              state.recoveryRequired=false;
+              try{button.click();return 'STARTED';}
+              catch{
+                state.inFlight=false;
+                state.completedAt=now;
+                state.result='CLICK_EXCEPTION';
+                return state.result;
+              }
             })()
             """;
     }
@@ -435,14 +561,20 @@ internal sealed class PortalWorkflowController
               const jquery=globalThis.jQuery||globalThis.$;
               if(!jquery||typeof jquery.ajax!=='function')return 'NO_JQUERY';
 
-              const getState=()=>globalThis[stateKey]||(globalThis[stateKey]={
-                inFlight:false,
-                startedAt:0,
-                completedAt:0,
-                result:null,
-                reported:false,
-                request:null
-              });
+              const getState=()=>{
+                const state=globalThis[stateKey]||(globalThis[stateKey]={
+                  inFlight:false,
+                  startedAt:0,
+                  completedAt:0,
+                  result:null,
+                  reported:false,
+                  request:null,
+                  legacyImported:false
+                });
+                state.requestSequence=Number(state.requestSequence||0);
+                state.requestId=Number(state.requestId||0);
+                return state;
+              };
               const resetTimer=()=>{
                 const mainApp=window.voMainApp;
                 if(mainApp?.hasAppMethod?.('setSessionTimerInit'))
@@ -463,6 +595,14 @@ internal sealed class PortalWorkflowController
                   const userSuccess=settings.success;
                   const userError=settings.error;
                   const userComplete=settings.complete;
+                  const context=settings.context||settings;
+                  const callCallbacks=(callbacks,args)=>{
+                    const list=Array.isArray(callbacks)?callbacks:[callbacks];
+                    for(const callback of list){
+                      if(typeof callback!=='function')continue;
+                      try{callback.apply(context,args);}catch{}
+                    }
+                  };
                   const classifyFailure=(xhr,textStatus)=>{
                     const reason=String(textStatus||'').toLowerCase();
                     if(reason==='timeout')return 'REQUEST_TIMEOUT';
@@ -471,23 +611,28 @@ internal sealed class PortalWorkflowController
                     return status>0?`HTTP_${status}`:'NETWORK_ERROR';
                   };
                   const shared=getState();
-                  if(shared.inFlight){
-                    const context=settings.context||settings;
-                    shared.request?.done?.(function(data,textStatus,xhr){
-                      if(typeof userSuccess==='function')userSuccess.call(context,data,textStatus,xhr);
-                      if(typeof userComplete==='function')userComplete.call(context,xhr,textStatus);
+                  const legacyState=globalThis.__oneClickNiceServerKeepAliveV2;
+                  const pendingState=shared.inFlight
+                    ?shared
+                    :(legacyState?.inFlight?legacyState:null);
+                  if(pendingState){
+                    pendingState.request?.done?.(function(data,textStatus,xhr){
+                      callCallbacks(userSuccess,[data,textStatus,xhr]);
+                      callCallbacks(userComplete,[xhr,textStatus]);
                     });
-                    shared.request?.fail?.(function(xhr,textStatus,errorThrown){
-                      if(typeof userError==='function')userError.call(context,xhr,textStatus,errorThrown);
-                      if(typeof userComplete==='function')userComplete.call(context,xhr,textStatus);
+                    pendingState.request?.fail?.(function(xhr,textStatus,errorThrown){
+                      callCallbacks(userError,[xhr,textStatus,errorThrown]);
+                      callCallbacks(userComplete,[xhr,textStatus]);
                     });
-                    return shared.request;
+                    return pendingState.request;
                   }
 
                   let finished=false;
+                  const requestId=++shared.requestSequence;
                   const finish=result=>{
                     if(finished)return;
                     finished=true;
+                    if(shared.requestId!==requestId)return;
                     shared.inFlight=false;
                     shared.result=result;
                     shared.completedAt=Date.now();
@@ -503,6 +648,8 @@ internal sealed class PortalWorkflowController
                   shared.completedAt=0;
                   shared.result=null;
                   shared.reported=false;
+                  shared.requestId=requestId;
+                  shared.ownerSource=settings.__oneClickSource==='program'?'program':'site';
 
                   const recordSuccess=result=>{
                     const raw=String(result??'').trim();
@@ -513,19 +660,19 @@ internal sealed class PortalWorkflowController
                     }catch{}
                     finish(normalized==='Y'||normalized==='N'
                       ?normalized
-                      :'UNEXPECTED_RESPONSE');
+                      :(/<!doctype|<html|로그인|login/i.test(raw)
+                        ?'AUTH_RESPONSE':'UNEXPECTED_RESPONSE'));
                   };
                   settings.success=function(result,...rest){
                     recordSuccess(result);
-                    if(typeof userSuccess==='function')
-                      userSuccess.apply(this,[result,...rest]);
+                    callCallbacks(userSuccess,[result,...rest]);
                   };
                   settings.error=function(...args){
                     finish(classifyFailure(args[0],args[1]));
-                    if(typeof userError==='function')userError.apply(this,args);
+                    callCallbacks(userError,args);
                   };
                   settings.complete=function(...args){
-                    if(typeof userComplete==='function')userComplete.apply(this,args);
+                    callCallbacks(userComplete,args);
                   };
 
                   try{
@@ -544,6 +691,19 @@ internal sealed class PortalWorkflowController
               }
 
               const state=getState();
+              const legacy=globalThis.__oneClickNiceServerKeepAliveV2;
+              if(legacy&&!state.legacyImported){
+                if(legacy.inFlight){
+                  return now-Number(legacy.startedAt||now)>staleRequestMs
+                    ?'LEGACY_IN_FLIGHT_STALE':'LEGACY_IN_FLIGHT';
+                }
+                state.legacyImported=true;
+                if(legacy.completedAt&&legacy.result){
+                  state.completedAt=Number(legacy.completedAt);
+                  state.result=String(legacy.result);
+                  state.reported=Boolean(legacy.reported);
+                }
+              }
               if(state.inFlight){
                 if(now-state.startedAt<=staleRequestMs)return 'IN_FLIGHT';
                 const request=state.request;
@@ -577,7 +737,8 @@ internal sealed class PortalWorkflowController
                 timeout:staleRequestMs,
                 dataType:'text',
                 type:'post',
-                url:'/sessionExtension.do'
+                url:'/sessionExtension.do',
+                __oneClickSource:'program'
               });
               return 'STARTED';
             })()
@@ -652,7 +813,8 @@ internal sealed class PortalWorkflowController
     {
         return """
             (()=>{
-              const stateKey='__oneClickEdufineServerKeepAliveV2';
+              const stateKey='__oneClickEdufineServerKeepAliveV3';
+              const legacyStateKey='__oneClickEdufineServerKeepAliveV2';
               const successIntervalMs=5*60*1000;
               const retryIntervalMs=60*1000;
               const staleRequestMs=5*60*1000;
@@ -664,13 +826,41 @@ internal sealed class PortalWorkflowController
                 ||typeof topForm.fnSessionCheck!=='function'
                 ||typeof topForm.fnCallback!=='function')return 'NO_SESSION_METHOD';
 
-              const getState=()=>globalThis[stateKey]||(globalThis[stateKey]={
-                inFlight:false,
-                startedAt:0,
-                completedAt:0,
-                result:null,
-                reported:false
-              });
+              const getState=()=>{
+                const state=globalThis[stateKey]||(globalThis[stateKey]={
+                  inFlight:false,
+                  startedAt:0,
+                  completedAt:0,
+                  result:null,
+                  reported:false,
+                  recoveryRequired:false,
+                  requestSequence:0,
+                  activeRequestId:0,
+                  formSequence:0,
+                  ownerFormToken:null,
+                  ownerForm:null,
+                  legacyImported:false
+                });
+                state.requestSequence=Number(state.requestSequence||0);
+                state.formSequence=Number(state.formSequence||0);
+                return state;
+              };
+              const state=getState();
+              if(!topForm.__oneClickSessionFormTokenV3)
+                topForm.__oneClickSessionFormTokenV3='f'+String(++state.formSequence);
+              const formToken=topForm.__oneClickSessionFormTokenV3;
+              if(state.ownerFormToken&&state.ownerFormToken!==formToken){
+                state.inFlight=false;
+                state.startedAt=0;
+                state.completedAt=0;
+                state.result=null;
+                state.reported=false;
+                state.recoveryRequired=false;
+                state.activeRequestId=0;
+                state.legacyImported=true;
+              }
+              state.ownerFormToken=formToken;
+              state.ownerForm=topForm;
 
               if(!topForm.__oneClickTimerBaselineV2
                 &&typeof topForm.TopFrame_ontimer==='function'
@@ -705,53 +895,119 @@ internal sealed class PortalWorkflowController
                 }
               }
 
-              if(!topForm.__oneClickSessionWrappedV2){
+              if(!topForm.__oneClickSessionWrappedV3){
                 const originalSessionCheck=topForm.__oneClickOriginalSessionCheckV1||topForm.fnSessionCheck;
-                const originalCallback=topForm.__oneClickOriginalCallbackV1||topForm.fnCallback;
-                topForm.__oneClickSessionWrappedV2=true;
+                const previousCallback=topForm.fnCallback;
+                const originalCallback=topForm.__oneClickOriginalCallbackV1||previousCallback;
+                topForm.__oneClickSessionWrappedV3=true;
                 topForm.__oneClickOriginalSessionCheckV1=originalSessionCheck;
                 topForm.__oneClickOriginalCallbackV1=originalCallback;
 
                 topForm.fnSessionCheck=function(...args){
                   const shared=getState();
-                  if(shared.inFlight)return;
+                  if(shared.ownerFormToken!==formToken||shared.ownerForm!==this||shared.inFlight)return;
+                  const requestId=++shared.requestSequence;
+                  const callbackId='sessionCheck__oneClick_'+formToken+'_'+String(requestId);
                   shared.inFlight=true;
                   shared.startedAt=Date.now();
                   shared.completedAt=0;
                   shared.result=null;
                   shared.reported=false;
+                  shared.recoveryRequired=false;
+                  shared.activeRequestId=requestId;
+                  let ownershipTagged=false;
+                  const transaction=this.transaction;
+                  const hadOwnTransaction=Object.prototype.hasOwnProperty.call(this,'transaction');
+                  if(typeof transaction==='function'){
+                    this.transaction=function(...transactionArgs){
+                      if(!ownershipTagged&&String(transactionArgs[0])==='sessionCheck'){
+                        transactionArgs[0]=callbackId;
+                        ownershipTagged=true;
+                      }
+                      return transaction.apply(this,transactionArgs);
+                    };
+                  }
                   try{
-                    return originalSessionCheck.apply(this,args);
+                    const result=originalSessionCheck.apply(this,args);
+                    if(!ownershipTagged){
+                      shared.inFlight=false;
+                      shared.completedAt=Date.now();
+                      shared.result='OWNERSHIP_UNCONFIRMED';
+                      shared.reported=false;
+                      shared.recoveryRequired=true;
+                    }
+                    return result;
                   }catch(error){
-                    shared.inFlight=false;
-                    shared.completedAt=Date.now();
-                    shared.result='REQUEST_EXCEPTION';
+                    if(shared.ownerFormToken===formToken&&shared.activeRequestId===requestId){
+                      shared.inFlight=false;
+                      shared.completedAt=Date.now();
+                      shared.result='REQUEST_EXCEPTION';
+                      shared.reported=false;
+                    }
                     throw error;
+                  }finally{
+                    if(typeof transaction==='function'){
+                      if(hadOwnTransaction)this.transaction=transaction;
+                      else delete this.transaction;
+                    }
                   }
                 };
 
                 topForm.fnCallback=function(svcID,errorCode,errorMsg){
-                  if(String(svcID)==='sessionCheck'){
+                  const callbackId=String(svcID||'');
+                  const match=/^sessionCheck__oneClick_(f\d+)_(\d+)$/.exec(callbackId);
+                  if(match){
                     const shared=getState();
-                    shared.inFlight=false;
-                    shared.completedAt=Date.now();
-                    shared.reported=false;
-                    if(Number(errorCode)===0&&String(this.fv_aliveYn)==='Y'){
-                      shared.result='Y';
-                      try{this.fnResetUseEndCeckTimer?.();}catch{}
-                    }else if(Number(errorCode)===0){
-                      shared.result='N';
-                    }else{
-                      shared.result='ERROR_'+String(errorCode??'UNKNOWN');
+                    const requestId=Number(match[2]);
+                    const owned=shared.inFlight
+                      &&shared.ownerForm===this
+                      &&shared.ownerFormToken===formToken
+                      &&match[1]===formToken
+                      &&shared.activeRequestId===requestId;
+                    if(owned){
+                      shared.inFlight=false;
+                      shared.completedAt=Date.now();
+                      shared.reported=false;
+                      shared.recoveryRequired=false;
+                      shared.activeRequestId=0;
+                      if(Number(errorCode)===0&&String(this.fv_aliveYn)==='Y'){
+                        shared.result='Y';
+                        try{this.fnResetUseEndCeckTimer?.();}catch{}
+                      }else if(Number(errorCode)===0){
+                        shared.result='N';
+                      }else{
+                        shared.result='ERROR_'+String(errorCode??'UNKNOWN');
+                      }
                     }
+                    return originalCallback.call(this,'sessionCheck',errorCode,errorMsg,...Array.prototype.slice.call(arguments,3));
+                  }
+                  if(callbackId==='sessionCheck'){
+                    return previousCallback.apply(this,arguments);
                   }
                   return originalCallback.apply(this,arguments);
                 };
               }
 
-              const state=getState();
-              if(state.inFlight)
-                return now-state.startedAt>staleRequestMs?'IN_FLIGHT_STALE':'IN_FLIGHT';
+              const legacy=globalThis[legacyStateKey];
+              if(legacy&&!state.legacyImported){
+                if(legacy.inFlight){
+                  return now-Number(legacy.startedAt||now)>staleRequestMs
+                    ?'LEGACY_IN_FLIGHT_STALE':'LEGACY_IN_FLIGHT';
+                }
+                state.legacyImported=true;
+                if(legacy.completedAt&&legacy.result){
+                  state.completedAt=Number(legacy.completedAt);
+                  state.result=String(legacy.result);
+                  state.reported=Boolean(legacy.reported);
+                }
+              }
+
+              if(state.inFlight){
+                if(now-state.startedAt<=staleRequestMs)return 'IN_FLIGHT';
+                state.recoveryRequired=true;
+                return 'RECOVERY_REQUIRED';
+              }
+              if(state.recoveryRequired)return state.result||'RECOVERY_REQUIRED';
 
               if(state.completedAt&&state.result){
                 if(!state.reported){
@@ -766,7 +1022,8 @@ internal sealed class PortalWorkflowController
 
               try{
                 topForm.fnSessionCheck();
-                return 'STARTED';
+                const current=getState();
+                return current.inFlight?'STARTED':(current.result||'REQUEST_EXCEPTION');
               }catch{
                 return getState().result||'REQUEST_EXCEPTION';
               }
