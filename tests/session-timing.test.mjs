@@ -6,31 +6,117 @@ import fs from 'node:fs';
 const source=fs.readFileSync(new URL('../PortalWorkflowController.cs',import.meta.url),'utf8');
 const script=source.split('private static string EdufineServerSessionCheckScript()')[1].split('"""')[1];
 
-function setup(){
-  let now=1000000,previous=1000,kills=0,resetCount=0;
+function setup({legacyV3,legacyV2}={}){
+  let now=1000000,previous=1000,kills=0,resetCount=0,frameworkResetCount=0;
   const requests=[],callbackLog=[];
   const app={gv_topFrame:{form:null}};
-  const makeForm=name=>({name,fv_useEndCeckTimerId:1,fv_nowUseEndTime:2400,fv_aliveYn:'Y',
-    transaction(svcID){requests.push({form:this,svcID})},
-    fnSessionCheck(){this.transaction('sessionCheck')},
-    fnCallback(svcID,errorCode,errorMsg,...rest){callbackLog.push({form:this,svcID,errorCode,errorMsg,rest})},
-    fnResetUseEndCeckTimer(){resetCount++;this.fv_nowUseEndTime=2400},
-    TopFrame_ontimer(obj,e){if(e.timerid!==1)return;const sec=Math.round(now/1000);this.fv_nowUseEndTime-=sec-previous;previous=sec;if(this.fv_nowUseEndTime<=0)kills++},
-    removeEventHandler(){return 0},addEventHandler(){return 0}});
+  const makeForm=name=>{
+    const form={name,fv_useEndCeckTimerId:1,fv_nowUseEndTime:2400,fv_aliveYn:'Y',
+      transaction(transactionSvcID,inData,outData,args,callbackName){
+        requests.push({form:this,transactionSvcID,callbackName});
+      },
+      gfnTransaction(strSvcId,inData,outData,args,async,callbackName){
+        const service={svcId:strSvcId,callback:callbackName};
+        return this.transaction(JSON.stringify(service),inData,outData,args,'_gfnCallback');
+      },
+      _gfnCallback(transactionSvcID,errorCode,errorMsg){
+        const service=JSON.parse(transactionSvcID);
+        switch(service.svcId){
+          case 'sessionCheck':break;
+          default:this.gfnResetUseEndCeckTimer();break;
+        }
+        return this[service.callback](service.svcId,errorCode,errorMsg);
+      },
+      fnSessionCheck(){return this.gfnTransaction('sessionCheck','','','','true','fnCallback')},
+      fnCallback(svcID,errorCode,errorMsg,...rest){callbackLog.push({form:this,svcID,errorCode,errorMsg,rest})},
+      fnResetUseEndCeckTimer(){resetCount++;this.fv_nowUseEndTime=2400},
+      gfnResetUseEndCeckTimer(){frameworkResetCount++},
+      TopFrame_ontimer(obj,e){if(e.timerid!==1)return;const sec=Math.round(now/1000);this.fv_nowUseEndTime-=sec-previous;previous=sec;if(this.fv_nowUseEndTime<=0)kills++},
+      removeEventHandler(){return 0},addEventHandler(){return 0}};
+    form.originalGfnTransaction=form.gfnTransaction;
+    form.originalTransaction=form.transaction;
+    return form;
+  };
   let f=makeForm('first');app.gv_topFrame.form=f;
   const context=vm.createContext({nexacro:{getApplication:()=>app},Date:{now:()=>now}});
+  if(legacyV3)context.__oneClickEdufineServerKeepAliveV3=legacyV3;
+  if(legacyV2)context.__oneClickEdufineServerKeepAliveV2=legacyV2;
   const run=()=>vm.runInContext(script,context);
-  run();f.TopFrame_ontimer(f,{timerid:1});
+  const initialResult=run();f.TopFrame_ontimer(f,{timerid:1});
   const complete=(index,{form=requests[index].form,errorCode=0,alive='Y'}={})=>{
     form.fv_aliveYn=alive;
-    form.fnCallback(requests[index].svcID,errorCode,'');
+    form[requests[index].callbackName](requests[index].transactionSvcID,errorCode,'');
   };
   const replaceForm=()=>{
     f=makeForm('replacement');app.gv_topFrame.form=f;return f;
   };
   return {get f(){return f},run,advance:seconds=>now+=seconds*1000,kills:()=>kills,
-    resets:()=>resetCount,requests,callbackLog,complete,replaceForm,context};
+    resets:()=>resetCount,frameworkResets:()=>frameworkResetCount,
+    requests,callbackLog,complete,replaceForm,context,initialResult};
 }
+
+test('real gfnTransaction JSON flow keeps sessionCheck service ID and restores wrappers',()=>{
+  const s=setup();assert.equal(s.initialResult,'STARTED');
+  const service=JSON.parse(s.requests[0].transactionSvcID);
+  assert.equal(service.svcId,'sessionCheck');assert.equal(service.callback,'fnCallback');
+  assert.match(service.__oneClickFormToken,/^f\d+$/);
+  assert.equal(service.__oneClickRequestId,1);
+  assert.equal(s.requests[0].callbackName,'_gfnCallback');
+  assert.equal(s.f.transaction,s.f.originalTransaction);
+  assert.equal(s.f.gfnTransaction,s.f.originalGfnTransaction);
+  s.complete(0);
+  assert.equal(s.frameworkResets(),0);
+  assert.equal(s.callbackLog.length,1);assert.equal(s.callbackLog[0].svcID,'sessionCheck');
+});
+
+test('pending and stale V3 requests block every V4 transmission',()=>{
+  const legacyV3={inFlight:true,startedAt:1000000,completedAt:0,result:null,
+    reported:false,recoveryRequired:false};
+  const s=setup({legacyV3});
+  assert.equal(s.initialResult,'LEGACY_V3_IN_FLIGHT');assert.equal(s.requests.length,0);
+  s.advance(301);
+  assert.equal(s.run(),'LEGACY_V3_RECOVERY_REQUIRED');assert.equal(s.requests.length,0);
+});
+
+test('V3 recovery and ownership-unconfirmed states never start V4',()=>{
+  for(const legacyV3 of [
+    {inFlight:false,startedAt:0,completedAt:0,result:null,reported:false,recoveryRequired:false},
+    {inFlight:true,startedAt:1000000,completedAt:0,result:null,reported:false,recoveryRequired:true},
+    {inFlight:true,startedAt:0,completedAt:0,result:null,reported:false,recoveryRequired:false},
+    {inFlight:false,startedAt:0,completedAt:1000000,result:'NETWORK_ERROR',reported:true,recoveryRequired:true},
+    {inFlight:false,startedAt:0,completedAt:1000000,result:'OWNERSHIP_UNCONFIRMED',reported:true,recoveryRequired:true}
+  ]){
+    const s=setup({legacyV3});
+    assert.equal(s.initialResult,'LEGACY_V3_RECOVERY_REQUIRED');
+    s.advance(600);assert.equal(s.run(),'LEGACY_V3_RECOVERY_REQUIRED');
+    assert.equal(s.requests.length,0);
+  }
+});
+
+test('confirmed V3 Y is imported once before V4 can start',()=>{
+  const legacyV3={inFlight:false,startedAt:999000,completedAt:999999,result:'Y',
+    reported:false,recoveryRequired:false};
+  const s=setup({legacyV3});
+  assert.equal(s.initialResult,'Y');assert.equal(s.requests.length,0);
+  legacyV3.result='N';assert.equal(s.run(),'Y_RECENT');
+  s.advance(301);assert.equal(s.run(),'STARTED');assert.equal(s.requests.length,1);
+});
+
+test('confirmed V3 N stays terminal and is never retransmitted',()=>{
+  const legacyV3={inFlight:false,startedAt:999000,completedAt:999999,result:'N',
+    reported:false,recoveryRequired:false};
+  const s=setup({legacyV3});
+  assert.equal(s.initialResult,'N');s.advance(3600);
+  assert.equal(s.run(),'N');assert.equal(s.requests.length,0);
+});
+
+test('V2 migration still blocks pending and imports confirmed completion when V3 is absent',()=>{
+  const legacyV2={inFlight:true,startedAt:1000000,completedAt:0,result:null,reported:false};
+  const s=setup({legacyV2});
+  assert.equal(s.initialResult,'LEGACY_IN_FLIGHT');assert.equal(s.requests.length,0);
+  legacyV2.inFlight=false;legacyV2.completedAt=1000001;legacyV2.result='Y';
+  assert.equal(s.run(),'Y');assert.equal(s.requests.length,0);
+});
 
 test('confirmed reset during hidden interval does not subtract pre-reset time twice',()=>{
   const s=setup();s.advance(2300);s.complete(0);s.advance(200);
@@ -113,12 +199,13 @@ test('request without transaction ownership tag is stopped as recovery required'
   replacement.fnSessionCheck=function(){};
   assert.equal(s.run(),'OWNERSHIP_UNCONFIRMED');
   assert.equal(s.run(),'OWNERSHIP_UNCONFIRMED');
-  replacement.fnCallback('sessionCheck',-9,'site error','extra');
+  replacement._gfnCallback(JSON.stringify({svcId:'sessionCheck',callback:'fnCallback'}),-9,'site error');
   assert.equal(s.callbackLog.length,1);
   assert.equal(s.callbackLog[0].svcID,'sessionCheck');
   assert.equal(s.callbackLog[0].errorCode,-9);assert.equal(s.callbackLog[0].errorMsg,'site error');
-  assert.deepEqual(s.callbackLog[0].rest,['extra']);assert.equal(s.callbackLog[0].form,replacement);
+  assert.deepEqual(s.callbackLog[0].rest,[]);assert.equal(s.callbackLog[0].form,replacement);
   assert.equal(previousCalls,1);
+  assert.equal(s.frameworkResets(),0);
 });
 
 test('unrelated service callback reaches the base handler once without changing session ownership',()=>{

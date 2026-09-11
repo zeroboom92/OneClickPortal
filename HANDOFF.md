@@ -148,5 +148,12 @@ dotnet build .\BrowserThumbnailPrototype.csproj --configuration Debug
 - 업무포털 공식 세션 초기화 버튼과 관측된 AJAX 엔드포인트를 사용합니다. 화면이 열려 있다는 사실만으로 정상으로 판정하지 않습니다.
 - 나이스 V2 진행 요청을 V3가 인식해 완료 전 새 요청을 보내지 않습니다. 요청 식별자, 콜백 배열, context 및 예외가 난 콜백 뒤의 내부 정리를 보강했습니다.
 - K-에듀파인 요청 종료를 확인할 수 없는 경우 자동 재전송을 하지 않고 명시적인 복구 필요 상태로 둡니다.
-- `node --test tests/*.test.mjs` 29개, Debug·Release 빌드가 경고와 오류 없이 통과했습니다.
+- `node --test tests/*.test.mjs` 35개, Debug·Release 빌드가 경고와 오류 없이 통과했습니다.
 - 관리자 권한 `powercfg /requests`의 실제 SYSTEM 항목과 종료 후 해제, 잠금·비모달 안내 방치를 포함한 세 시스템 90분 관찰은 아직 미검증입니다. 이 검증 전에는 수정본을 배포 가능으로 판정하지 않습니다.
+
+2026-09-11 K-에듀파인 테스트본 연결 회귀 수정:
+
+- r2 테스트본은 실제 `fnSessionCheck → gfnTransaction → JSON service object → transaction → _gfnCallback` 경로를 반영하지 못해 `OWNERSHIP_UNCONFIRMED`를 표시했습니다.
+- V4는 `svcId=sessionCheck`를 유지한 채 JSON 객체에만 화면·요청 식별자를 넣고 `_gfnCallback`에서 회수합니다. 기존 에듀파인 공통 callback과 sessionCheck 전용 분기를 보존합니다.
+- 실제 로그인 탭에 V4를 적용해 `STARTED → Y`, `recoveryRequired=false`, 현재 화면 소유권 일치를 확인했습니다.
+- V3에서 종료를 확인하지 못한 요청 상태가 남으면 V4 요청을 겹쳐 보내지 않으며, 화면 새로고침 후 다시 연결하도록 안내합니다.
