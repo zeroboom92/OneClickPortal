@@ -8,15 +8,18 @@ namespace BrowserThumbnailPrototype;
 
 public sealed class MainForm : Form
 {
-    private const int WidgetWidth = 550;
+    private const int WidgetWidth = 506;
     private const int WidgetHeight = 66;
 
     private readonly TableLayoutPanel _rootLayout = new();
     private readonly Label _brandLabel = new();
     private readonly ComboBox _browserWindows = new();
     private readonly Label _statusLabel = new();
-    private readonly FlowLayoutPanel _topTaskButtonPanel = new();
-    private readonly FlowLayoutPanel _bottomTaskButtonPanel = new();
+    private readonly TableLayoutPanel _topTaskButtonPanel = new();
+    private readonly TableLayoutPanel _bottomTaskButtonPanel = new();
+    private readonly NotifyIcon _trayIcon = new();
+    private readonly ContextMenuStrip _trayMenu = new();
+    private bool _exitRequested;
     private readonly Button _refreshButton = new();
     private readonly Button _launchBrowserButton = new();
     private readonly Button _connectButton = new();
@@ -57,15 +60,16 @@ public sealed class MainForm : Form
         StartPosition = FormStartPosition.Manual;
         FormBorderStyle = FormBorderStyle.None;
         TopMost = AppPreferences.IsAlwaysOnTopEnabled();
-        MinimumSize = new Size(540, WidgetHeight);
+        MinimumSize = new Size(WidgetWidth, WidgetHeight);
         Size = new Size(WidgetWidth, WidgetHeight);
-        ShowInTaskbar = true;
+        ShowInTaskbar = false;
         BackColor = Color.White;
         ForeColor = Color.FromArgb(34, 40, 50);
         AutoScaleMode = AutoScaleMode.Dpi;
         Font = new Font("맑은 고딕", 9F);
 
         BuildUi();
+        InitializeTray();
         // 고배율 화면에서도 고정 크기 UI가 글자와 함께 확대되도록 96 DPI를 디자인 기준으로 지정합니다.
         // 실제 컨트롤을 만든 뒤에 지정해야 창과 버튼까지 함께 자동 배율 조정됩니다.
         AutoScaleDimensions = new SizeF(96F, 96F);
@@ -107,8 +111,15 @@ public sealed class MainForm : Form
             AppLogger.Info("Application", "프로그램 종료");
             DisconnectBrowser();
         };
-        FormClosing += (_, _) =>
+        FormClosing += (_, e) =>
         {
+            if (!_exitRequested && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                Hide();
+                return;
+            }
+
             SystemEvents.SessionSwitch -= OnWindowsSessionSwitch;
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             _isClosing = true;
@@ -123,6 +134,43 @@ public sealed class MainForm : Form
         _portalSessionTimer.Tick += async (_, _) => await CheckPortalSessionsInBackgroundAsync();
         SystemEvents.SessionSwitch += OnWindowsSessionSwitch;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
+    }
+
+    private void InitializeTray()
+    {
+        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
+        _trayMenu.Items.Add("원클릭 업무포털 열기", null, (_, _) => BringWidgetToFront());
+        _trayMenu.Items.Add("설정", null, (_, _) =>
+        {
+            BringWidgetToFront();
+            OpenSettings();
+        });
+        _trayMenu.Items.Add(new ToolStripSeparator());
+        _trayMenu.Items.Add("완전히 종료", null, (_, _) =>
+        {
+            _exitRequested = true;
+            Close();
+        });
+        _trayIcon.Text = "원클릭 업무포털 · 클릭하여 열기";
+        _trayIcon.Icon = Icon;
+        _trayIcon.ContextMenuStrip = _trayMenu;
+        _trayIcon.MouseClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left) BringWidgetToFront();
+        };
+        _trayIcon.Visible = true;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _trayIcon.Dispose();
+            _trayMenu.Dispose();
+            _healthTimer.Dispose();
+            _portalSessionTimer.Dispose();
+        }
+        base.Dispose(disposing);
     }
 
     private void OnWindowsSessionSwitch(object sender, SessionSwitchEventArgs e)
@@ -157,10 +205,11 @@ public sealed class MainForm : Form
     {
         _rootLayout.Dock = DockStyle.Fill;
         _rootLayout.ColumnCount = 1;
-        _rootLayout.RowCount = 2;
+        _rootLayout.RowCount = 3;
         _rootLayout.Padding = new Padding(8, 4, 8, 4);
         _rootLayout.BackColor = Color.White;
         _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        _rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 1));
         _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         Controls.Add(_rootLayout);
 
@@ -198,6 +247,8 @@ public sealed class MainForm : Form
         _settingsButton.AccessibleName = "설정";
         _settingsButton.Click += (_, _) => OpenSettings();
         topRow.Controls.Add(_settingsButton, 4, 0);
+        _settingsButton.Margin = new Padding(4, 0, 0, 0);
+        _settingsButton.Dock = DockStyle.Fill;
 
         _browserWindows.DropDownStyle = ComboBoxStyle.DropDownList;
         _browserWindows.Width = 92;
@@ -206,15 +257,20 @@ public sealed class MainForm : Form
         _browserWindows.BackColor = Color.FromArgb(248, 249, 251);
         _browserWindows.ForeColor = Color.FromArgb(45, 52, 64);
         _browserWindows.Margin = new Padding(0, 0, 4, 0);
-        var connectionControls = new FlowLayoutPanel
+        var connectionControls = new TableLayoutPanel
         {
-            AutoSize = true,
-            WrapContents = false,
-            FlowDirection = FlowDirection.LeftToRight,
+            Dock = DockStyle.Fill,
+            ColumnCount = 4,
+            RowCount = 1,
             Height = 28,
             Margin = new Padding(0),
             Padding = new Padding(0),
         };
+        connectionControls.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
+        connectionControls.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32));
+        connectionControls.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 73));
+        connectionControls.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        connectionControls.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         connectionControls.Controls.Add(_browserWindows);
 
         StyleButton(_refreshButton, "↻", 28, Color.FromArgb(241, 244, 248), Color.FromArgb(74, 84, 100));
@@ -240,6 +296,11 @@ public sealed class MainForm : Form
             await ConnectSelectedBrowserAsync();
         };
         connectionControls.Controls.Add(_connectButton);
+        foreach (Control control in connectionControls.Controls)
+        {
+            control.Dock = DockStyle.Fill;
+            control.Margin = new Padding(0, 0, control == _connectButton ? 0 : 4, 0);
+        }
 
         bottomRow.Controls.Add(connectionControls, 0, 0);
 
@@ -248,12 +309,14 @@ public sealed class MainForm : Form
 
         StyleButton(_closeButton, "X", 30, Color.FromArgb(255, 239, 241), Color.FromArgb(160, 70, 82));
         _closeButton.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
-        _closeButton.AccessibleName = "닫기";
+        _closeButton.AccessibleName = "트레이로 숨기기";
+        _closeButton.Margin = new Padding(4, 0, 0, 0);
+        _closeButton.Dock = DockStyle.Fill;
         _closeButton.Click += (_, _) => Close();
         bottomRow.Controls.Add(_closeButton, 3, 0);
 
         _rootLayout.Controls.Add(topRow, 0, 0);
-        _rootLayout.Controls.Add(bottomRow, 0, 1);
+        _rootLayout.Controls.Add(bottomRow, 0, 2);
 
         EnableDragging(_rootLayout);
 
@@ -270,22 +333,32 @@ public sealed class MainForm : Form
         for (var index = 0; index < tasks.Count; index++)
         {
             var task = tasks[index];
-            var button = new Button
+            var button = new GlassTaskButton
             {
                 Text = task.Name,
             };
             StyleButton(button, task.Name, 72, Color.FromArgb(241, 244, 248), Color.FromArgb(45, 52, 64));
+            button.Margin = new Padding(0);
+            button.Dock = DockStyle.Fill;
             button.Click += async (_, _) => await RunWorkflowAsync(task.Kind);
             _taskButtons.Add(button);
-            (index < 3 ? _topTaskButtonPanel : _bottomTaskButtonPanel).Controls.Add(button);
+            (index < 3 ? _topTaskButtonPanel : _bottomTaskButtonPanel).Controls.Add(button, (index % 3) * 2, 0);
         }
     }
 
-    private static void ConfigureTaskButtonPanel(FlowLayoutPanel panel)
+    private static void ConfigureTaskButtonPanel(TableLayoutPanel panel)
     {
-        panel.FlowDirection = FlowDirection.LeftToRight;
-        panel.WrapContents = false;
-        panel.AutoSize = true;
+        panel.ColumnCount = 5;
+        panel.RowCount = 1;
+        panel.Dock = DockStyle.Fill;
+        // 시스템 이름은 72px를 유지하고 네 업무 버튼은 72 → 51px로 줄입니다.
+        // 소수점 여백 대신 실제 정수 픽셀 간격을 사용합니다.
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         panel.Height = 28;
         panel.Margin = new Padding(0);
         panel.Padding = new Padding(0);
@@ -303,10 +376,10 @@ public sealed class MainForm : Form
             Padding = new Padding(0),
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 102));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 7));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 10));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 176));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
         row.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         return row;
     }
@@ -322,10 +395,10 @@ public sealed class MainForm : Form
             Margin = new Padding(0),
             Padding = new Padding(0),
         };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 7));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 32));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 10));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 176));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
         row.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         return row;
     }
@@ -355,7 +428,7 @@ public sealed class MainForm : Form
             Width = 1,
             Height = 28,
             BackColor = Color.FromArgb(224, 228, 235),
-            Margin = new Padding(3, 0, 3, 0),
+            Margin = new Padding(4, 0, 5, 0),
         };
     }
 
@@ -512,14 +585,16 @@ public sealed class MainForm : Form
             _applyingWindowShape = true;
             using var path = new GraphicsPath();
             var bounds = new Rectangle(0, 0, Width, Height);
-            const int radius = 18;
+            var radius = 18f * 0.7f * DeviceDpi / 96f;
             var diameter = radius * 2;
             path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
             path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
             path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
             path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
             path.CloseFigure();
+            var oldRegion = Region;
             Region = new Region(path);
+            oldRegion?.Dispose();
         }
         finally
         {
@@ -783,6 +858,8 @@ public sealed class MainForm : Form
     {
         try
         {
+            Show();
+            KeepWindowWithinWorkingArea();
             if (WindowState == FormWindowState.Minimized)
             {
                 WindowState = FormWindowState.Normal;

@@ -445,7 +445,7 @@ internal sealed class PortalWorkflowController
                     SessionSystemState.Failed,
                     string.Equals(edufineExtensionResult, "LEGACY_V3_RECOVERY_REQUIRED", StringComparison.Ordinal)
                         ? "이전 테스트본의 K-에듀파인 확인 상태가 남아 있습니다. K-에듀파인 화면을 새로고침한 뒤 다시 연결해 주세요."
-                        : "K-에듀파인 연장 요청의 종료를 확인할 수 없습니다. K-에듀파인 화면을 확인하거나 다시 로그인해 주세요.");
+                        : "K-에듀파인 연장 요청의 종료를 확인할 수 없습니다. K-에듀파인 화면을 새로고침한 뒤 다시 연결해 주세요. 로그인 화면이 나오면 직접 로그인해 주세요.");
             }
 
             AppLogger.Info(
