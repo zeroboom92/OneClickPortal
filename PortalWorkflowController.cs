@@ -203,6 +203,7 @@ internal sealed class PortalWorkflowController
         try
         {
             await using var session = await DevToolsSession.ConnectAsync(_devToolsPort, target.Id, cancellationToken);
+            await session.ResumeBackgroundPageAsync(cancellationToken);
             var state = await session.EvaluateStringAsync(PortalSessionStateScript(), cancellationToken);
             if (string.Equals(state, "LOGGED_OUT", StringComparison.Ordinal))
             {
@@ -288,6 +289,7 @@ internal sealed class PortalWorkflowController
         try
         {
             await using var session = await DevToolsSession.ConnectAsync(_devToolsPort, target.Id, cancellationToken);
+            await session.ResumeBackgroundPageAsync(cancellationToken);
             if (isNice)
             {
                 if (await TryCloseVisibleNiceSecurityShutdownDialogAsync(session, cancellationToken))

@@ -92,6 +92,7 @@ internal static class DevToolsDiscovery
 internal sealed class DevToolsSession : IAsyncDisposable
 {
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(12);
+    private static int _backgroundResumeUnavailable;
     private readonly ClientWebSocket _socket = new();
     private readonly SemaphoreSlim _commandLock = new(1, 1);
     private int _nextCommandId;
@@ -240,6 +241,29 @@ internal sealed class DevToolsSession : IAsyncDisposable
     public Task BringToFrontAsync(CancellationToken cancellationToken = default)
     {
         return ExecuteSessionCommandWithoutResultAsync("Page.bringToFront", new { }, cancellationToken);
+    }
+
+    public async Task ResumeBackgroundPageAsync(CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _backgroundResumeUnavailable) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await ExecuteSessionCommandWithoutResultAsync(
+                "Page.setWebLifecycleState",
+                new { state = "active" },
+                cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
+            // Older Chromium builds may not expose this optional command.
+            // Session checks must still run through their existing path.
+            Interlocked.Exchange(ref _backgroundResumeUnavailable, 1);
+            AppLogger.Info("SessionRefresh", "브라우저가 백그라운드 탭 깨우기를 지원하지 않아 기존 방식으로 점검합니다.");
+        }
     }
 
     public async Task ActivateTargetAsync(CancellationToken cancellationToken = default)
