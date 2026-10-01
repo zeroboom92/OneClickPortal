@@ -9,6 +9,13 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        // Preview alongside an installed copy without updater/startup/URI registration.
+        if (args.Contains("--dock-preview", StringComparer.OrdinalIgnoreCase))
+        {
+            ApplicationConfiguration.Initialize();
+            Application.Run(new MainForm { Text = "원클릭 업무포털 · 상단 슬라이드 MVP" });
+            return;
+        }
         VelopackApp.Build().Run();
         ApplicationConfiguration.Initialize();
 

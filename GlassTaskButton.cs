@@ -38,11 +38,12 @@ internal sealed class GlassTaskButton : Button
         e.Graphics.Clear(Parent?.BackColor ?? Color.White);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var active = Enabled && (_pressed || _hovered);
-        var top = active ? Color.FromArgb(247, 252, 255) : Color.FromArgb(253, 254, 255);
-        var bottom = active ? Color.FromArgb(216, 234, 250) : Color.FromArgb(234, 240, 248);
+        var baseColor = BackColor.IsEmpty ? Color.FromArgb(241, 244, 248) : BackColor;
+        var top = active ? Lighten(baseColor, 0.12f) : Lighten(baseColor, 0.04f);
+        var bottom = active ? Darken(baseColor, 0.06f) : baseColor;
         using var fill = new LinearGradientBrush(bounds, _pressed && Enabled ? bottom : top, bottom, 90f);
         e.Graphics.FillPath(fill, path);
-        using var border = new Pen(active ? Color.FromArgb(158, 187, 216) : Color.FromArgb(207, 219, 232));
+        using var border = new Pen(Darken(baseColor, active ? 0.18f : 0.12f));
         e.Graphics.DrawPath(border, path);
         using var highlight = new Pen(Color.FromArgb(210, Color.White), scale);
         e.Graphics.DrawLine(highlight, diameter / 2, 1.5f * scale, Width - diameter / 2, 1.5f * scale);
@@ -51,5 +52,24 @@ internal sealed class GlassTaskButton : Button
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
         if (Focused && ShowFocusCues)
             ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -4, -4));
+    }
+
+    private static Color Lighten(Color color, float amount)
+    {
+        return Blend(color, Color.White, amount);
+    }
+
+    private static Color Darken(Color color, float amount)
+    {
+        return Blend(color, Color.Black, amount);
+    }
+
+    private static Color Blend(Color first, Color second, float amount)
+    {
+        amount = Math.Clamp(amount, 0f, 1f);
+        return Color.FromArgb(
+            (int)Math.Round(first.R + (second.R - first.R) * amount),
+            (int)Math.Round(first.G + (second.G - first.G) * amount),
+            (int)Math.Round(first.B + (second.B - first.B) * amount));
     }
 }

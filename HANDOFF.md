@@ -184,3 +184,7 @@ dotnet build .\BrowserThumbnailPrototype.csproj --configuration Debug
 - V4는 `svcId=sessionCheck`를 유지한 채 JSON 객체에만 화면·요청 식별자를 넣고 `_gfnCallback`에서 회수합니다. 기존 에듀파인 공통 callback과 sessionCheck 전용 분기를 보존합니다.
 - 실제 로그인 탭에 V4를 적용해 `STARTED → Y`, `recoveryRequired=false`, 현재 화면 소유권 일치를 확인했습니다. r3 실행 파일로 재시작·연결한 뒤에도 다음 점검 주기에 K-에듀파인 공식 callback `Y`, 업무포털 HTTP 성공, 나이스 최근 `Y`가 함께 기록됐고 기존 경고창은 재발하지 않았습니다.
 - V3에서 종료를 확인하지 못한 요청 상태가 남으면 V4 요청을 겹쳐 보내지 않으며, 화면 새로고침 후 다시 연결하도록 안내합니다.
+
+## 2026-10-01 / 1.1.0 배포
+
+상단 슬라이드 및 한 줄 UI 적용. TopDockController.cs가 위치·슬라이드·손잡이를, PortalWindowShape.cs가 하단 곡선을 담당합니다. MainForm은 700×40, 버튼 높이 28px(96 DPI)입니다. 트레이에서 일반 모드 전환 가능하며 재실행 시 상단 모드입니다. 로그인·인증서 선택 및 최종 상신 수동 원칙은 유지됩니다. 전체 화면 자동 숨김은 미구현입니다.
