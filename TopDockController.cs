@@ -80,6 +80,7 @@ internal sealed class TopDockController : IDisposable
 
     public void Enable()
     {
+        if (Enabled) return;
         using var key = Registry.CurrentUser.OpenSubKey(KeyPath);
         var screen = Screen.FromControl(_portal).Bounds;
         _anchor = key?.GetValue("TopDockLeft") is int x && key.GetValue("TopDockTop") is int y
@@ -94,10 +95,9 @@ internal sealed class TopDockController : IDisposable
 
     public void Disable()
     {
+        if (!Enabled) return;
         Enabled = false; _animation.Stop(); _handle.Hide();
-        var old = _portal.Region; _portal.Region = PortalWindowShape.Create(_portal.Size, _portal.DeviceDpi); old?.Dispose();
-        var area = Screen.FromPoint(_anchor).WorkingArea;
-        _portal.Location = new Point(Math.Clamp(_anchor.X, area.Left, Math.Max(area.Left,area.Right-_portal.Width)), area.Top + 20);
+        var old = _portal.Region; _portal.Region = null; old?.Dispose();
         _portal.TopMost = AppPreferences.IsAlwaysOnTopEnabled();
     }
 

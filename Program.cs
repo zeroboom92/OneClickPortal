@@ -10,10 +10,14 @@ internal static class Program
     private static void Main(string[] args)
     {
         // Preview alongside an installed copy without updater/startup/URI registration.
-        if (args.Contains("--dock-preview", StringComparer.OrdinalIgnoreCase))
+        var updatePreview = args.Contains("--update-preview", StringComparer.OrdinalIgnoreCase);
+        if (updatePreview || args.Contains("--dock-preview", StringComparer.OrdinalIgnoreCase))
         {
             ApplicationConfiguration.Initialize();
-            Application.Run(new MainForm { Text = "원클릭 업무포털 · 상단 슬라이드 MVP" });
+            using var preview = new MainForm { Text = "원클릭 업무포털 · 테스트" };
+            if (updatePreview)
+                preview.Shown += (_, _) => preview.ShowUpdateAnnouncement(force: true);
+            Application.Run(preview);
             return;
         }
         VelopackApp.Build().Run();
@@ -55,6 +59,7 @@ internal static class Program
             mainForm.Shown += async (_, _) =>
             {
                 UsageTelemetry.Start();
+                mainForm.ShowUpdateAnnouncement();
                 await AppUpdater.CheckForUpdatesAsync();
                 if (requestedTask is not null)
                 {

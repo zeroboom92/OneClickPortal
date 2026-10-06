@@ -11,15 +11,24 @@ public sealed class MainForm : Form
     private TopDockController? _topDock;
     private const int WidgetWidth = 700;
     private const int WidgetHeight = 40;
+    private const int FloatingWidgetWidth = 506;
+    private const int FloatingWidgetHeight = 66;
+    private PortalDisplayMode _displayMode = AppPreferences.GetDisplayMode();
+    private bool _changingDisplayMode = true;
 
     private readonly TableLayoutPanel _rootLayout = new();
+    private readonly TableLayoutPanel _connectionControls = new();
+    private readonly Panel _separator = CreateSeparator();
     private readonly Label _brandLabel = new();
+    private readonly Label _statusLabel = new();
+    private Image? _brandIcon;
     private readonly ComboBox _browserWindows = new();
     private readonly ToolTip _statusTip = new() { AutoPopDelay = 15000 };
     private readonly TableLayoutPanel _topTaskButtonPanel = new();
     private readonly TableLayoutPanel _bottomTaskButtonPanel = new();
     private readonly NotifyIcon _trayIcon = new();
     private readonly ContextMenuStrip _trayMenu = new();
+    private readonly ToolStripMenuItem _dockMenuItem = new("상단 숨김 · 슬라이드");
     private bool _exitRequested;
     private readonly Button _refreshButton = new();
     private readonly Button _launchBrowserButton = new();
@@ -70,6 +79,7 @@ public sealed class MainForm : Form
         Font = new Font("맑은 고딕", 9F);
 
         BuildUi();
+        ConfigureWindowLayout(_displayMode);
         InitializeTray();
         // 고배율 화면에서도 고정 크기 UI가 글자와 함께 확대되도록 96 DPI를 디자인 기준으로 지정합니다.
         // 실제 컨트롤을 만든 뒤에 지정해야 창과 버튼까지 함께 자동 배율 조정됩니다.
@@ -84,9 +94,8 @@ public sealed class MainForm : Form
 
         Shown += (_, _) =>
         {
-            PositionAtSavedLocationOrBottomRight();
             _topDock = new TopDockController(this);
-            _topDock.Enable();
+            ApplyDisplayMode(_displayMode);
             RefreshBrowserWindows();
             if (_sleepGuardFailureMessage is not null)
             {
@@ -97,7 +106,7 @@ public sealed class MainForm : Form
         DpiChanged += (_, _) => KeepWindowWithinWorkingArea();
         LocationChanged += (_, _) =>
         {
-            if (Visible && _topDock?.Enabled != true)
+            if (Visible && !_changingDisplayMode && _displayMode == PortalDisplayMode.FloatingWindow)
             {
                 try
                 {
@@ -148,13 +157,25 @@ public sealed class MainForm : Form
             BringWidgetToFront();
             OpenSettings();
         });
-        var dockItem = new ToolStripMenuItem("상단 슬라이드 모드") { Checked = true, CheckOnClick = true };
-        dockItem.CheckedChanged += (_, _) =>
+        _dockMenuItem.Checked = _displayMode == PortalDisplayMode.TopDock;
+        _dockMenuItem.Click += (_, _) =>
         {
-            if (_topDock is null) return;
-            if (dockItem.Checked) _topDock.Enable(); else _topDock.Disable();
+            var mode = _displayMode == PortalDisplayMode.TopDock
+                ? PortalDisplayMode.FloatingWindow : PortalDisplayMode.TopDock;
+            try
+            {
+                AppPreferences.SetDisplayMode(mode);
+                ApplyDisplayMode(mode);
+                BringWidgetToFront();
+            }
+            catch (Exception exception)
+            {
+                AppLogger.Error("Preferences", "표시 방식 변경 실패", exception);
+                MessageBox.Show(this, exception.Message, "표시 방식 변경 실패", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         };
-        _trayMenu.Items.Add(dockItem);
+        _trayMenu.Items.Add(_dockMenuItem);
+        _trayMenu.Items.Add("업데이트 내용 보기", null, (_, _) => ShowUpdateAnnouncement(force: true));
         _trayMenu.Items.Add(new ToolStripSeparator());
         _trayMenu.Items.Add("완전히 종료", null, (_, _) =>
         {
@@ -177,7 +198,8 @@ public sealed class MainForm : Form
         {
             _topDock?.Dispose();
             _statusTip.Dispose();
-            _brandLabel.Image?.Dispose();
+            _brandIcon?.Dispose();
+            _statusLabel.Dispose();
             _trayIcon.Dispose();
             _trayMenu.Dispose();
             _healthTimer.Dispose();
@@ -228,24 +250,31 @@ public sealed class MainForm : Form
 
         using var appIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
         using var smallIcon = new Icon(appIcon, new Size(24, 24));
-        _brandLabel.Image = smallIcon.ToBitmap();
+        _brandIcon = smallIcon.ToBitmap();
+        _brandLabel.Image = _brandIcon;
         _brandLabel.Text = string.Empty;
         _brandLabel.ImageAlign = ContentAlignment.MiddleCenter;
         _brandLabel.AccessibleName = "원클릭 업무포털 상태";
         _brandLabel.Margin = new Padding(0, 0, 4, 0);
         _brandLabel.Dock = DockStyle.Fill;
         _rootLayout.Controls.Add(_brandLabel, 0, 0);
+        _statusLabel.Dock = DockStyle.Fill;
+        _statusLabel.Margin = new Padding(0);
+        _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _statusLabel.AutoEllipsis = true;
+        _statusLabel.ForeColor = Color.FromArgb(92, 102, 116);
 
         _browserWindows.DropDownStyle = ComboBoxStyle.DropDownList;
         _browserWindows.DropDownWidth = 360;
         _browserWindows.BackColor = Color.FromArgb(248, 249, 251);
         _browserWindows.ForeColor = Color.FromArgb(45, 52, 64);
         _browserWindows.AccessibleName = "브라우저 창 목록";
-        var connectionControls = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1,
-            Margin = new Padding(0), Padding = new Padding(0),
-        };
+        var connectionControls = _connectionControls;
+        connectionControls.Dock = DockStyle.Fill;
+        connectionControls.ColumnCount = 4;
+        connectionControls.RowCount = 1;
+        connectionControls.Margin = new Padding(0);
+        connectionControls.Padding = new Padding(0);
         connectionControls.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
         connectionControls.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
         connectionControls.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 61));
@@ -280,7 +309,7 @@ public sealed class MainForm : Form
         _browserWindows.Dock = DockStyle.None;
         _browserWindows.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _rootLayout.Controls.Add(connectionControls, 1, 0);
-        _rootLayout.Controls.Add(CreateSeparator(), 2, 0);
+        _rootLayout.Controls.Add(_separator, 2, 0);
         BuildTaskButtons();
         _rootLayout.Controls.Add(_topTaskButtonPanel, 3, 0);
         _rootLayout.Controls.Add(_bottomTaskButtonPanel, 5, 0);
@@ -303,8 +332,107 @@ public sealed class MainForm : Form
         _statusTip.SetToolTip(_settingsButton, "설정");
         _statusTip.SetToolTip(_closeButton, "트레이로 숨기기");
         EnableDragging(_rootLayout);
+        EnableDragging(_statusLabel);
         UpdateConnectionControls();
         SetConnectionStatus("연결 안 됨");
+    }
+
+    private void ConfigureWindowLayout(PortalDisplayMode mode)
+    {
+        var docked = mode == PortalDisplayMode.TopDock;
+        var scale = DeviceDpi / 96f;
+        int Pixels(int value) => (int)Math.Round(value * scale);
+        _rootLayout.SuspendLayout();
+        _connectionControls.SuspendLayout();
+        try
+        {
+            // Reparent the same controls so browser selection, progress and handlers survive switching.
+            foreach (Control control in _rootLayout.Controls)
+            {
+                _rootLayout.SetColumnSpan(control, 1);
+                _rootLayout.SetRowSpan(control, 1);
+            }
+            _rootLayout.Controls.Clear();
+            _rootLayout.ColumnStyles.Clear();
+            _rootLayout.RowStyles.Clear();
+            _rootLayout.ColumnCount = docked ? 8 : 5;
+            _rootLayout.RowCount = docked ? 1 : 3;
+            _rootLayout.Padding = new Padding(Pixels(8), Pixels(docked ? 6 : 4), Pixels(8), Pixels(docked ? 6 : 4));
+            _separator.Dock = DockStyle.Fill;
+            if (docked)
+            {
+                foreach (var width in new[] { 30, 251, 8, 163, 3, 163, 32, 32 })
+                    _rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Pixels(width)));
+                _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+                _rootLayout.Controls.Add(_brandLabel, 0, 0);
+                _rootLayout.Controls.Add(_connectionControls, 1, 0);
+                _rootLayout.Controls.Add(_separator, 2, 0);
+                _rootLayout.Controls.Add(_topTaskButtonPanel, 3, 0);
+                _rootLayout.Controls.Add(_bottomTaskButtonPanel, 5, 0);
+                _rootLayout.Controls.Add(_settingsButton, 6, 0);
+                _rootLayout.Controls.Add(_closeButton, 7, 0);
+            }
+            else
+            {
+                foreach (var width in new[] { 102, 0, 10, 176, 34 })
+                    _rootLayout.ColumnStyles.Add(width == 0
+                        ? new ColumnStyle(SizeType.Percent, 100)
+                        : new ColumnStyle(SizeType.Absolute, Pixels(width)));
+                _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+                _rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, Pixels(1)));
+                _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+                _rootLayout.Controls.Add(_brandLabel, 0, 0);
+                _rootLayout.Controls.Add(_statusLabel, 1, 0);
+                _rootLayout.Controls.Add(_separator, 2, 0);
+                _rootLayout.SetRowSpan(_separator, 3);
+                _rootLayout.Controls.Add(_topTaskButtonPanel, 3, 0);
+                _rootLayout.Controls.Add(_bottomTaskButtonPanel, 3, 2);
+                _rootLayout.Controls.Add(_connectionControls, 0, 2);
+                _rootLayout.SetColumnSpan(_connectionControls, 2);
+                _rootLayout.Controls.Add(_settingsButton, 4, 0);
+                _rootLayout.Controls.Add(_closeButton, 4, 2);
+            }
+            _brandLabel.Image = docked ? _brandIcon : null;
+            _brandLabel.Text = docked ? string.Empty : "원클릭업무포털";
+            _brandLabel.ForeColor = Color.FromArgb(42, 106, 190);
+            _brandLabel.TextAlign = ContentAlignment.MiddleLeft;
+            _brandLabel.Margin = docked ? new Padding(0, 0, Pixels(4), 0) : new Padding(0);
+            _connectionControls.ColumnStyles[0].Width = Pixels(docked ? 90 : 96);
+            _connectionControls.ColumnStyles[1].Width = Pixels(docked ? 28 : 32);
+            _connectionControls.ColumnStyles[2].Width = Pixels(docked ? 61 : 73);
+            foreach (var panel in new[] { _topTaskButtonPanel, _bottomTaskButtonPanel })
+                panel.ColumnStyles[0].Width = Pixels(docked ? 64 : 72);
+            MinimumSize = Size.Empty;
+            Size = new Size(Pixels(docked ? WidgetWidth : FloatingWidgetWidth), Pixels(docked ? WidgetHeight : FloatingWidgetHeight));
+            MinimumSize = Size;
+        }
+        finally
+        {
+            _connectionControls.ResumeLayout(true);
+            _rootLayout.ResumeLayout(true);
+        }
+    }
+
+    private void ApplyDisplayMode(PortalDisplayMode mode)
+    {
+        _changingDisplayMode = true;
+        try
+        {
+            _topDock?.Disable();
+            _displayMode = mode;
+            ConfigureWindowLayout(mode);
+            UpdateWindowShape();
+            PositionAtSavedLocationOrBottomRight();
+            if (mode == PortalDisplayMode.TopDock)
+                _topDock?.Enable();
+            else
+                TopMost = AppPreferences.IsAlwaysOnTopEnabled();
+            _dockMenuItem.Checked = mode == PortalDisplayMode.TopDock;
+        }
+        finally
+        {
+            _changingDisplayMode = false;
+        }
     }
     private void BuildTaskButtons()
     {
@@ -413,6 +541,12 @@ public sealed class MainForm : Form
         }
     }
 
+    internal void ShowUpdateAnnouncement(bool force = false)
+    {
+        if (UpdateAnnouncement.Show(this, force))
+            OpenSettings();
+    }
+
     private void OpenSettings()
     {
         using var dialog = new SettingsForm(
@@ -421,7 +555,8 @@ public sealed class MainForm : Form
             AppPreferences.IsUsageTelemetryEnabled(),
             AppPreferences.IsAlwaysOnTopEnabled(),
             AppPreferences.GetEducationOfficeCode(),
-            AppPreferences.GetWindowOpacityPercent());
+            AppPreferences.GetWindowOpacityPercent(),
+            _displayMode);
         if (dialog.ShowDialog(this) != DialogResult.OK)
         {
             return;
@@ -446,7 +581,10 @@ public sealed class MainForm : Form
             AppPreferences.SetUsageTelemetryEnabled(dialog.UsageTelemetryEnabled);
             AppPreferences.SetAlwaysOnTopEnabled(dialog.AlwaysOnTopEnabled);
             AppPreferences.SetWindowOpacityPercent(dialog.WindowOpacityPercent);
+            AppPreferences.SetDisplayMode(dialog.DisplayMode);
             ApplyWindowOpacity();
+            if (_displayMode != dialog.DisplayMode)
+                ApplyDisplayMode(dialog.DisplayMode);
             TopMost = _topDock?.Enabled == true || dialog.AlwaysOnTopEnabled;
             UpdateAutoRefreshTimer();
             if (educationOfficeChanged && _sourceWindow != IntPtr.Zero)
@@ -535,6 +673,11 @@ public sealed class MainForm : Form
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
+        UpdateWindowShape();
+    }
+
+    private void UpdateWindowShape()
+    {
         if (!IsHandleCreated || _applyingWindowShape || Width <= 0 || Height <= 0)
         {
             return;
@@ -544,7 +687,7 @@ public sealed class MainForm : Form
         {
             _applyingWindowShape = true;
             var oldRegion = Region;
-            Region = PortalWindowShape.Create(Size, DeviceDpi);
+            Region = _displayMode == PortalDisplayMode.TopDock ? PortalWindowShape.Create(Size, DeviceDpi) : null;
             oldRegion?.Dispose();
         }
         finally
@@ -1341,6 +1484,8 @@ public sealed class MainForm : Form
 
     private void SetStatus(string message)
     {
+        _statusLabel.Text = message;
+        _statusTip.SetToolTip(_statusLabel, message);
         _statusTip.SetToolTip(_brandLabel, $"원클릭 업무포털\n{message}");
         _brandLabel.AccessibleDescription = message;
     }

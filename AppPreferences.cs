@@ -2,6 +2,12 @@ using Microsoft.Win32;
 
 namespace BrowserThumbnailPrototype;
 
+internal enum PortalDisplayMode
+{
+    TopDock,
+    FloatingWindow,
+}
+
 internal static class AppPreferences
 {
     private const string ApplicationName = "OneClickPortal";
@@ -18,6 +24,37 @@ internal static class AppPreferences
     private const string LastPresenceReportValueName = "LastPresenceReportUtc";
     private const string EducationOfficeValueName = "EducationOfficeCode";
     private const string AlwaysOnTopValueName = "AlwaysOnTop";
+    private const string DisplayModeValueName = "DisplayMode";
+    private const string LastAcknowledgedUpdateVersionValueName = "LastAcknowledgedUpdateVersion";
+
+    public static string? GetLastAcknowledgedUpdateVersion()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(SettingsKeyPath, writable: false);
+        return key?.GetValue(LastAcknowledgedUpdateVersionValueName) as string;
+    }
+
+    public static void SetLastAcknowledgedUpdateVersion(string version)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(SettingsKeyPath, writable: true)
+            ?? throw new InvalidOperationException("업데이트 안내 확인 기록을 저장하지 못했습니다.");
+        key.SetValue(LastAcknowledgedUpdateVersionValueName, version, RegistryValueKind.String);
+    }
+
+    public static PortalDisplayMode GetDisplayMode()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(SettingsKeyPath, writable: false);
+        return key?.GetValue(DisplayModeValueName) is string value
+            && value == nameof(PortalDisplayMode.FloatingWindow)
+                ? PortalDisplayMode.FloatingWindow
+                : PortalDisplayMode.TopDock;
+    }
+
+    public static void SetDisplayMode(PortalDisplayMode mode)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(SettingsKeyPath, writable: true)
+            ?? throw new InvalidOperationException("표시 방식 설정을 저장하지 못했습니다.");
+        key.SetValue(DisplayModeValueName, mode.ToString(), RegistryValueKind.String);
+    }
 
     public static bool IsWindowsStartupEnabled()
     {
