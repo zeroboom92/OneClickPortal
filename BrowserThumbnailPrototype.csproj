@@ -8,17 +8,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Platforms>AnyCPU</Platforms>
-    <Version>1.1.1</Version>
-    <AssemblyVersion>1.1.1.0</AssemblyVersion>
-    <FileVersion>1.1.1.0</FileVersion>
-    <InformationalVersion>1.1.1</InformationalVersion>
+    <Version>1.2.0</Version>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <FileVersion>1.2.0.0</FileVersion>
+    <InformationalVersion>1.2.0</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationIcon>assets\OneClickPortal.ico</ApplicationIcon>
     <DefaultItemExcludes>$(DefaultItemExcludes);OneClickPortal-program-source-0.1.5\**;tmp\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="assets\updates\display-mode-v1.png" LogicalName="OneClickPortal.Update.DisplayModes" />
     <PackageReference Include="Velopack" Version="1.2.0" />
   </ItemGroup>
 </Project>

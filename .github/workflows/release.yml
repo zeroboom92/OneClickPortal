@@ -67,6 +67,7 @@ jobs:
             --mainExe OneClickPortal.exe `
             --icon .\assets\OneClickPortal.ico `
             --packTitle "원클릭업무포털" `
+            --releaseNotes .\RELEASE_NOTES.md `
             --outputDir .\Releases
 
       - name: Publish GitHub Release

@@ -10,6 +10,8 @@ internal enum PortalTaskKind
     EdufineHome,
     Draft,
     PurchaseRequest,
+    Approval,
+    Budget,
 }
 
 internal sealed record WorkflowResult(
@@ -42,7 +44,7 @@ internal sealed record SessionSystemResult(
     SessionSystemState State,
     string Message);
 
-internal sealed class PortalWorkflowController
+internal sealed partial class PortalWorkflowController
 {
     private readonly int _devToolsPort;
     private readonly EducationOffice _educationOffice;
@@ -92,6 +94,8 @@ internal sealed class PortalWorkflowController
                     cancellationToken),
                 PortalTaskKind.Draft => OpenDraftAsync(cancellationToken),
                 PortalTaskKind.PurchaseRequest => OpenPurchaseRequestAsync(cancellationToken),
+                PortalTaskKind.Approval => OpenEdufineOverviewAsync(approval: true, cancellationToken),
+                PortalTaskKind.Budget => OpenEdufineOverviewAsync(approval: false, cancellationToken),
                 _ => throw new ArgumentOutOfRangeException(nameof(taskKind)),
             });
             AppLogger.Info("Workflow", $"{taskKind} 완료");
@@ -382,30 +386,46 @@ internal sealed class PortalWorkflowController
             }
 
             var edufineState = await ReadEdufineSessionStateAsync(session, cancellationToken);
-            if (edufineState.Expired || edufineState.RemainingSeconds == 0)
+            if (edufineState.VisibleShutdown)
             {
-                AppLogger.Info("SessionRefresh", "K-에듀파인: 실제 사용시간이 0:00이거나 종료 안내가 표시되었습니다.");
+                AppLogger.Info("SessionRefresh", "K-에듀파인: 화면에 표시된 사용시간 종료 안내를 확인했습니다.");
                 return new SessionSystemResult(
                     systemName,
                     SessionSystemState.Expired,
                     "K-에듀파인 사용시간이 종료되었습니다. Edge에서 K-에듀파인에 다시 로그인해 주세요.");
             }
 
+            var confirmZeroTimer = edufineState.RemainingSeconds == 0;
+            if (confirmZeroTimer)
+                AppLogger.Info("SessionRefresh", "K-에듀파인: 표시 시간이 0:00이므로 이전 성공 기록 대신 서버 상태를 새로 확인합니다.");
             var edufineExtensionResult = await session.EvaluateStringAsync(
-                EdufineServerSessionCheckScript(),
+                EdufineServerSessionCheckScript(confirmZeroTimer),
                 cancellationToken);
-            if (string.Equals(edufineExtensionResult, "Y", StringComparison.Ordinal))
+            if (edufineExtensionResult is "Y" or "Y_RECENT")
             {
+                var confirmed = await ReadEdufineSessionStateAsync(session, cancellationToken);
+                if (confirmed.VisibleShutdown)
+                    return new SessionSystemResult(systemName, SessionSystemState.Expired,
+                        "K-에듀파인 화면에 사용시간 종료 안내가 표시되었습니다. 직접 다시 로그인해 주세요.");
+                if (confirmed.RemainingSeconds is not > 0 && confirmed.InternalRemainingSeconds is not > 0)
+                {
+                    AppLogger.Info("SessionRefresh", "K-에듀파인: 서버 생존 응답은 확인했지만 사용시간 복구를 확인하지 못했습니다.");
+                    return new SessionSystemResult(systemName, SessionSystemState.Failed,
+                        "K-에듀파인 서버는 응답했지만 사용시간을 확인하지 못했습니다. 열린 화면을 확인해 주세요.");
+                }
                 AppLogger.Info(
                     "SessionRefresh",
-                    "K-에듀파인: 공식 sessionCheck 콜백에서 서버 생존 응답 Y를 확인했습니다.");
+                    edufineExtensionResult == "Y"
+                        ? "K-에듀파인: 서버 생존 응답 Y와 사용시간 복구를 확인했습니다."
+                        : "K-에듀파인: 최근 5분 안의 서버 생존 응답 Y와 남은 사용시간을 확인했습니다.");
                 return new SessionSystemResult(systemName, SessionSystemState.Healthy, "K-에듀파인 세션 연장 성공");
             }
 
-            if (string.Equals(edufineExtensionResult, "Y_RECENT", StringComparison.Ordinal))
+            if (edufineExtensionResult is "Y_RESET_UNAVAILABLE" or "Y_RESET_FAILED" or "Y_RESET_UNCONFIRMED")
             {
-                AppLogger.Info("SessionRefresh", "K-에듀파인: 최근 5분 안에 서버 생존 응답 Y를 확인했습니다.");
-                return new SessionSystemResult(systemName, SessionSystemState.Healthy, "K-에듀파인 최근 연장 성공");
+                AppLogger.Info("SessionRefresh", $"K-에듀파인: 서버 생존 응답 Y 이후 사용시간 초기화를 확인하지 못했습니다. 상태={edufineExtensionResult}");
+                return new SessionSystemResult(systemName, SessionSystemState.Failed,
+                    "K-에듀파인 서버는 응답했지만 사용시간 초기화를 확인하지 못했습니다. 열린 화면을 확인해 주세요.");
             }
 
             if (string.Equals(edufineExtensionResult, "N", StringComparison.Ordinal))
@@ -760,7 +780,7 @@ internal sealed class PortalWorkflowController
         var json = await session.EvaluateStringAsync(EdufineSessionStateScript(), cancellationToken);
         if (string.IsNullOrWhiteSpace(json))
         {
-            return new EdufineSessionState(null, false, null);
+            return new EdufineSessionState(null, false, null, false, null);
         }
 
         using var document = JsonDocument.Parse(json);
@@ -775,6 +795,12 @@ internal sealed class PortalWorkflowController
             root.TryGetProperty("timerText", out var timerText)
                 && timerText.ValueKind == JsonValueKind.String
                     ? timerText.GetString()
+                    : null,
+            root.TryGetProperty("visibleShutdown", out var visibleShutdown)
+                && visibleShutdown.ValueKind == JsonValueKind.True,
+            root.TryGetProperty("internalRemainingSeconds", out var internalRemaining)
+                && internalRemaining.ValueKind == JsonValueKind.Number
+                    ? internalRemaining.GetDouble()
                     : null);
     }
 
@@ -782,10 +808,13 @@ internal sealed class PortalWorkflowController
     {
         return """
             (()=>{
+              if(document.readyState!=='complete')return JSON.stringify({
+                timerText:null,remainingSeconds:null,internalRemainingSeconds:null,visibleShutdown:false,expired:false});
               const app=globalThis.nexacro?.getApplication?.()||globalThis.application;
-              const topForm=app?.mainframe?.MainVFrameSet?.TopFrame?.form?.divTopGrp?.form;
-              const timerText=String(topForm?.staUseTime?.text??'').trim();
+              const topForm=app?.gv_topFrame?.form||app?.mainframe?.MainVFrameSet?.TopFrame?.form;
+              const timerText=String(topForm?.divTopGrp?.form?.staUseTime?.text??'').trim();
               const parseSeconds=value=>{
+                if(!/^\d+:\d{2}(?::\d{2})?$/.test(value))return null;
                 const parts=value.split(':').map(part=>Number(part));
                 if(parts.some(part=>!Number.isFinite(part)||part<0))return null;
                 if(parts.length===2&&parts[1]<60)return parts[0]*60+parts[1];
@@ -793,34 +822,65 @@ internal sealed class PortalWorkflowController
                   return parts[0]*3600+parts[1]*60+parts[2];
                 return null;
               };
+              const visibility=new Map();
+              const shown=element=>{
+                if(!element||element.nodeType!==1)return false;
+                if(visibility.has(element))return visibility.get(element);
+                const style=element.ownerDocument.defaultView.getComputedStyle(element);
+                const result=!element.hidden&&element.getAttribute('aria-hidden')!=='true'
+                  &&style.display!=='none'&&style.visibility!=='hidden'&&style.visibility!=='collapse'
+                  &&style.opacity!=='0'&&(!element.parentElement||shown(element.parentElement));
+                visibility.set(element,result);return result;
+              };
+              const visible=element=>{
+                if(!shown(element))return false;
+                const rect=element.getBoundingClientRect();
+                return rect.width>0&&rect.height>0&&rect.right>0&&rect.bottom>0;
+              };
+              const visibleText=element=>{
+                if(!shown(element)||/^(SCRIPT|STYLE|NOSCRIPT)$/.test(element.tagName))return '';
+                const rect=element.getBoundingClientRect();
+                if(rect.width>0&&rect.height>0&&(rect.right<=0||rect.bottom<=0))return '';
+                let text='';
+                for(const child of element.childNodes){
+                  if(child.nodeType===3)text+=child.textContent;
+                  else if(child.nodeType===1)text+=visibleText(child);
+                }
+                return text;
+              };
               const documents=[];
               const visit=current=>{
-                if(!current||documents.includes(current))return;
+                if(!current||current.readyState!=='complete'||documents.includes(current))return;
                 documents.push(current);
                 for(const frame of current.querySelectorAll?.('iframe,frame')||[]){
-                  try{visit(frame.contentDocument)}catch{}
+                  if(visible(frame)){try{visit(frame.contentDocument)}catch{}}
                 }
               };
               visit(document);
               const shutdownVisible=documents.some(current=>{
-                const text=String(current.body?.innerText||current.body?.textContent||'')
-                  .replace(/\s+/g,' ');
-                return text.includes('사용시간이 종료되었습니다');
+                const text=visibleText(current.body).replace(/\s+/g,'');
+                return text.includes('사용시간이종료되었습니다');
               });
               const remainingSeconds=parseSeconds(timerText);
+              const internalRemaining=topForm?.fv_nowUseEndTime;
+              const internalRemainingSeconds=typeof internalRemaining==='number'&&Number.isFinite(internalRemaining)
+                ?Math.max(0,internalRemaining):null;
               return JSON.stringify({
                 timerText:timerText||null,
                 remainingSeconds,
-                expired:shutdownVisible||remainingSeconds===0
+                internalRemainingSeconds,
+                visibleShutdown:shutdownVisible,
+                expired:shutdownVisible||(remainingSeconds===0&&!(internalRemainingSeconds>0))
               });
             })()
             """;
     }
 
-    private static string EdufineServerSessionCheckScript()
+    private static string EdufineServerSessionCheckScript(bool forceCheck = false)
     {
-        return """
+        return $$"""
             (()=>{
+              const forceCheck={{(forceCheck ? "true" : "false")}};
               const stateKey='__oneClickEdufineServerKeepAliveV4';
               const legacyV3StateKey='__oneClickEdufineServerKeepAliveV3';
               const legacyV2StateKey='__oneClickEdufineServerKeepAliveV2';
@@ -834,6 +894,14 @@ internal sealed class PortalWorkflowController
               if(!topForm
                 ||typeof topForm.fnSessionCheck!=='function'
                 ||typeof topForm.fnCallback!=='function')return 'NO_SESSION_METHOD';
+              const hasPositiveUseTime=form=>{
+                const remaining=form?.fv_nowUseEndTime;
+                if(typeof remaining==='number'&&Number.isFinite(remaining)&&remaining>0)return true;
+                const text=String(form?.divTopGrp?.form?.staUseTime?.text||'').trim();
+                if(!/^\d+:\d{2}(?::\d{2})?$/.test(text))return false;
+                const parts=text.split(':').map(Number);
+                return parts.slice(1).every(value=>value<60)&&parts.some(value=>value>0);
+              };
 
               const getState=()=>{
                 const state=globalThis[stateKey]||(globalThis[stateKey]={
@@ -875,6 +943,7 @@ internal sealed class PortalWorkflowController
 
               if(!topForm.__oneClickTimerBaselineV2
                 &&typeof topForm.TopFrame_ontimer==='function'
+                &&typeof topForm.fnResetUseEndCeckTimer==='function'
                 &&typeof topForm.removeEventHandler==='function'
                 &&typeof topForm.addEventHandler==='function'){
                 const originalTimer=topForm.TopFrame_ontimer;
@@ -936,11 +1005,13 @@ internal sealed class PortalWorkflowController
                 };
               }
 
-              if(!topForm.__oneClickSessionWrappedV4){
+              // Keep V4 request ownership/state so an already-running request is not duplicated.
+              // Reinstall only the callback policy on pages that still have the old V4 wrapper.
+              if(!topForm.__oneClickSessionWrappedV5){
                 const originalSessionCheck=topForm.__oneClickOriginalSessionCheckV1||topForm.fnSessionCheck;
                 const previousCallback=topForm.fnCallback;
                 const originalCallback=topForm.__oneClickOriginalCallbackV1||previousCallback;
-                topForm.__oneClickSessionWrappedV4=true;
+                topForm.__oneClickSessionWrappedV5=true;
                 topForm.__oneClickOriginalSessionCheckV1=originalSessionCheck;
                 topForm.__oneClickOriginalCallbackV1=originalCallback;
 
@@ -1019,8 +1090,13 @@ internal sealed class PortalWorkflowController
                       shared.recoveryRequired=false;
                       shared.activeRequestId=0;
                       if(Number(errorCode)===0&&String(this.fv_aliveYn)==='Y'){
-                        shared.result='Y';
-                        try{this.fnResetUseEndCeckTimer?.();}catch{}
+                        if(typeof this.fnResetUseEndCeckTimer!=='function')shared.result='Y_RESET_UNAVAILABLE';
+                        else{
+                          try{
+                            this.fnResetUseEndCeckTimer();
+                            shared.result=hasPositiveUseTime(this)?'Y':'Y_RESET_UNCONFIRMED';
+                          }catch{shared.result='Y_RESET_FAILED';}
+                        }
                       }else if(Number(errorCode)===0){
                         shared.result='N';
                       }else{
@@ -1090,14 +1166,18 @@ internal sealed class PortalWorkflowController
               if(state.recoveryRequired)return state.result||'RECOVERY_REQUIRED';
 
               if(state.completedAt&&state.result){
-                if(!state.reported){
-                  state.reported=true;
-                  return state.result;
-                }
                 if(state.result==='N')return 'N';
-                const waitMs=state.result==='Y'?successIntervalMs:retryIntervalMs;
-                if(now-state.completedAt<waitMs)
-                  return state.result==='Y'?'Y_RECENT':state.result;
+                if(state.result==='Y'){
+                  // A zero display requires a new official check, never an old cached Y.
+                  // First observation of an old callback must obey the same freshness limit.
+                  if(!forceCheck&&now-state.completedAt<successIntervalMs&&hasPositiveUseTime(topForm)){
+                    if(!state.reported){state.reported=true;return 'Y';}
+                    return 'Y_RECENT';
+                  }
+                }else{
+                  if(!state.reported){state.reported=true;return state.result;}
+                  if(now-state.completedAt<retryIntervalMs)return state.result;
+                }
               }
 
               try{
@@ -1114,7 +1194,9 @@ internal sealed class PortalWorkflowController
     private sealed record EdufineSessionState(
         int? RemainingSeconds,
         bool Expired,
-        string? TimerText);
+        string? TimerText,
+        bool VisibleShutdown,
+        double? InternalRemainingSeconds);
 
     private async Task<WorkflowResult> OpenNiceApplicationAsync(
         string displayName,

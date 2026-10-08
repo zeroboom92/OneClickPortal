@@ -4,13 +4,12 @@ namespace BrowserThumbnailPrototype;
 
 internal static class UpdateAnnouncement
 {
-    // Update these release notes and the embedded artwork when preparing the next version.
-    public const string Title = "표시 방식을 직접 고를 수 있어요";
-    public const string Summary = "설정에서 미리보기를 보고 상단 숨김 또는 별도 창을 선택하세요.\n선택한 방식은 다음 실행에도 유지됩니다.";
-    public const string ArtworkResourceName = "OneClickPortal.Update.DisplayModes";
+    // Keep the release notes and native feature preview aligned with this release.
+    public const string Title = "결재와 예산을 바로 열어요";
+    public const string Summary = "결재 건수는 에듀파인 화면에 표시된 숫자를 확인합니다.\n문서 확인과 최종 결재는 직접 진행해 주세요.";
     public static string CurrentVersion => typeof(UpdateAnnouncement).Assembly
         .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+', 2)[0]
-        ?? typeof(UpdateAnnouncement).Assembly.GetName().Version?.ToString(3) ?? "1.1.1";
+        ?? typeof(UpdateAnnouncement).Assembly.GetName().Version?.ToString(3) ?? "1.2.0";
 
     public static bool ShouldShow(string? acknowledgedVersion) =>
         !string.Equals(acknowledgedVersion, CurrentVersion, StringComparison.Ordinal);

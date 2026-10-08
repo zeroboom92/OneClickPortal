@@ -2,7 +2,7 @@ namespace BrowserThumbnailPrototype;
 
 internal sealed class UpdateAnnouncementForm : Form
 {
-    private readonly PictureBox _artwork = new();
+    private readonly UpdateFeaturePreview _featurePreview = new();
     public bool OpenSettingsRequested { get; private set; }
 
     public UpdateAnnouncementForm(bool showSettingsButton = true)
@@ -35,20 +35,9 @@ internal sealed class UpdateAnnouncementForm : Form
             Font = new Font("맑은 고딕", 17F, FontStyle.Bold),
         });
 
-        _artwork.Location = new Point(24, 96);
-        _artwork.Size = new Size(532, 299);
-        _artwork.SizeMode = PictureBoxSizeMode.Zoom;
-        _artwork.AccessibleName = "상단 손잡이와 이동 가능한 2행 별도 창의 비교 그림";
-        _artwork.TabStop = false;
-        using (var stream = typeof(UpdateAnnouncementForm).Assembly.GetManifestResourceStream(UpdateAnnouncement.ArtworkResourceName))
-        {
-            if (stream is not null)
-            {
-                using var image = Image.FromStream(stream);
-                _artwork.Image = new Bitmap(image);
-            }
-        }
-        Controls.Add(_artwork);
+        _featurePreview.Location = new Point(24, 96);
+        _featurePreview.Size = new Size(532, 299);
+        Controls.Add(_featurePreview);
 
         Controls.Add(new Label
         {
@@ -60,7 +49,7 @@ internal sealed class UpdateAnnouncementForm : Form
 
         if (showSettingsButton)
         {
-            var settingsButton = CreateButton("설정에서 선택하기", new Point(288, 470), 170, primary: true);
+            var settingsButton = CreateButton("설정 열기", new Point(288, 470), 170, primary: true);
             settingsButton.Click += (_, _) =>
             {
                 OpenSettingsRequested = true;
@@ -91,13 +80,4 @@ internal sealed class UpdateAnnouncementForm : Form
         return button;
     }
 
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing)
-        {
-            _artwork.Image?.Dispose();
-            _artwork.Image = null;
-        }
-        base.Dispose(disposing);
-    }
 }

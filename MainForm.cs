@@ -6,15 +6,16 @@ using Microsoft.Win32;
 
 namespace BrowserThumbnailPrototype;
 
-public sealed class MainForm : Form
+public sealed partial class MainForm : Form
 {
     private TopDockController? _topDock;
-    private const int WidgetWidth = 700;
+    private const int WidgetWidth = 800;
     private const int WidgetHeight = 40;
-    private const int FloatingWidgetWidth = 506;
+    private const int FloatingWidgetWidth = 558;
     private const int FloatingWidgetHeight = 66;
     private PortalDisplayMode _displayMode = AppPreferences.GetDisplayMode();
     private bool _changingDisplayMode = true;
+    private readonly bool _closeToTray;
 
     private readonly TableLayoutPanel _rootLayout = new();
     private readonly TableLayoutPanel _connectionControls = new();
@@ -26,6 +27,7 @@ public sealed class MainForm : Form
     private readonly ToolTip _statusTip = new() { AutoPopDelay = 15000 };
     private readonly TableLayoutPanel _topTaskButtonPanel = new();
     private readonly TableLayoutPanel _bottomTaskButtonPanel = new();
+    private readonly TableLayoutPanel _overviewTaskButtonPanel = new();
     private readonly NotifyIcon _trayIcon = new();
     private readonly ContextMenuStrip _trayMenu = new();
     private readonly ToolStripMenuItem _dockMenuItem = new("상단 숨김 · 슬라이드");
@@ -64,8 +66,9 @@ public sealed class MainForm : Form
     private bool _sessionNoticeIsSessionStatus;
     private string? _sleepGuardFailureMessage;
 
-    public MainForm()
+    public MainForm(bool closeToTray = true)
     {
+        _closeToTray = closeToTray;
         Text = "원클릭 업무포털";
         StartPosition = FormStartPosition.Manual;
         FormBorderStyle = FormBorderStyle.None;
@@ -79,6 +82,7 @@ public sealed class MainForm : Form
         Font = new Font("맑은 고딕", 9F);
 
         BuildUi();
+        InitializeApprovalBadge();
         ConfigureWindowLayout(_displayMode);
         InitializeTray();
         // 고배율 화면에서도 고정 크기 UI가 글자와 함께 확대되도록 96 DPI를 디자인 기준으로 지정합니다.
@@ -125,7 +129,7 @@ public sealed class MainForm : Form
         };
         FormClosing += (_, e) =>
         {
-            if (!_exitRequested && e.CloseReason == CloseReason.UserClosing)
+            if (_closeToTray && !_exitRequested && e.CloseReason == CloseReason.UserClosing)
             {
                 e.Cancel = true;
                 Hide();
@@ -137,6 +141,7 @@ public sealed class MainForm : Form
             _isClosing = true;
             _healthTimer.Stop();
             _portalSessionTimer.Stop();
+            StopApprovalMonitoring();
             _workflowCancellationSource?.Cancel();
             _sessionCheckCancellationSource?.Cancel();
             _systemSleepGuard.Dispose();
@@ -144,6 +149,7 @@ public sealed class MainForm : Form
         _healthTimer.Tick += (_, _) => CheckSourceWindow();
         _healthTimer.Start();
         _portalSessionTimer.Tick += async (_, _) => await CheckPortalSessionsInBackgroundAsync();
+        _approvalBadgeTimer.Tick += async (_, _) => await RefreshScheduledApprovalBadgeAsync();
         SystemEvents.SessionSwitch += OnWindowsSessionSwitch;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
     }
@@ -196,6 +202,7 @@ public sealed class MainForm : Form
     {
         if (disposing)
         {
+            StopApprovalMonitoring();
             _topDock?.Dispose();
             _statusTip.Dispose();
             _brandIcon?.Dispose();
@@ -204,6 +211,7 @@ public sealed class MainForm : Form
             _trayMenu.Dispose();
             _healthTimer.Dispose();
             _portalSessionTimer.Dispose();
+            _approvalBadgeTimer.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -239,11 +247,11 @@ public sealed class MainForm : Form
     private void BuildUi()
     {
         _rootLayout.Dock = DockStyle.Fill;
-        _rootLayout.ColumnCount = 8;
+        _rootLayout.ColumnCount = 9;
         _rootLayout.RowCount = 1;
         _rootLayout.Padding = new Padding(8, 6, 8, 6);
         _rootLayout.BackColor = Color.White;
-        foreach (var width in new[] { 30, 251, 8, 163, 3, 163, 32, 32 })
+        foreach (var width in new[] { 30, 251, 8, 163, 3, 163, 102, 32, 32 })
             _rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, width));
         _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(_rootLayout);
@@ -283,8 +291,12 @@ public sealed class MainForm : Form
         connectionControls.Controls.Add(_browserWindows, 0, 0);
 
         StyleButton(_refreshButton, "↻", 28, Color.FromArgb(241, 244, 248), Color.FromArgb(74, 84, 100));
-        _refreshButton.AccessibleName = "브라우저 창 새로고침";
-        _refreshButton.Click += (_, _) => RefreshBrowserWindows();
+        _refreshButton.AccessibleName = "브라우저 창 목록 및 결재 건수 다시 확인";
+        _refreshButton.Click += async (_, _) =>
+        {
+            RefreshBrowserWindows();
+            await RefreshApprovalBadgeAsync();
+        };
         connectionControls.Controls.Add(_refreshButton, 1, 0);
         StyleButton(_launchBrowserButton, "로그인", 54, Color.FromArgb(49, 124, 213), Color.White);
         _launchBrowserButton.Click += async (_, _) => await LaunchControlledEdgeAsync();
@@ -313,6 +325,7 @@ public sealed class MainForm : Form
         BuildTaskButtons();
         _rootLayout.Controls.Add(_topTaskButtonPanel, 3, 0);
         _rootLayout.Controls.Add(_bottomTaskButtonPanel, 5, 0);
+        _rootLayout.Controls.Add(_overviewTaskButtonPanel, 6, 0);
 
         StyleButton(_settingsButton, "⚙", 30, Color.FromArgb(241, 244, 248), Color.FromArgb(74, 84, 100));
         _settingsButton.Font = new Font("Segoe UI Symbol", 12F, FontStyle.Regular);
@@ -320,17 +333,17 @@ public sealed class MainForm : Form
         _settingsButton.Click += (_, _) => OpenSettings();
         _settingsButton.Margin = new Padding(4, 0, 0, 0);
         _settingsButton.Dock = DockStyle.Fill;
-        _rootLayout.Controls.Add(_settingsButton, 6, 0);
+        _rootLayout.Controls.Add(_settingsButton, 7, 0);
         StyleButton(_closeButton, "X", 30, Color.FromArgb(255, 239, 241), Color.FromArgb(160, 70, 82));
         _closeButton.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
-        _closeButton.AccessibleName = "트레이로 숨기기";
+        _closeButton.AccessibleName = _closeToTray ? "트레이로 숨기기" : "테스트본 종료";
         _closeButton.Margin = new Padding(4, 0, 0, 0);
         _closeButton.Dock = DockStyle.Fill;
         _closeButton.Click += (_, _) => Close();
-        _rootLayout.Controls.Add(_closeButton, 7, 0);
-        _statusTip.SetToolTip(_refreshButton, "브라우저 창 새로고침");
+        _rootLayout.Controls.Add(_closeButton, 8, 0);
+        _statusTip.SetToolTip(_refreshButton, "브라우저 창 목록 및 결재 건수 다시 확인");
         _statusTip.SetToolTip(_settingsButton, "설정");
-        _statusTip.SetToolTip(_closeButton, "트레이로 숨기기");
+        _statusTip.SetToolTip(_closeButton, _closeToTray ? "트레이로 숨기기" : "테스트본 종료");
         EnableDragging(_rootLayout);
         EnableDragging(_statusLabel);
         UpdateConnectionControls();
@@ -355,13 +368,13 @@ public sealed class MainForm : Form
             _rootLayout.Controls.Clear();
             _rootLayout.ColumnStyles.Clear();
             _rootLayout.RowStyles.Clear();
-            _rootLayout.ColumnCount = docked ? 8 : 5;
+            _rootLayout.ColumnCount = docked ? 9 : 6;
             _rootLayout.RowCount = docked ? 1 : 3;
             _rootLayout.Padding = new Padding(Pixels(8), Pixels(docked ? 6 : 4), Pixels(8), Pixels(docked ? 6 : 4));
             _separator.Dock = DockStyle.Fill;
             if (docked)
             {
-                foreach (var width in new[] { 30, 251, 8, 163, 3, 163, 32, 32 })
+                foreach (var width in new[] { 30, 251, 8, 163, 3, 163, 102, 32, 32 })
                     _rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Pixels(width)));
                 _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
                 _rootLayout.Controls.Add(_brandLabel, 0, 0);
@@ -369,12 +382,13 @@ public sealed class MainForm : Form
                 _rootLayout.Controls.Add(_separator, 2, 0);
                 _rootLayout.Controls.Add(_topTaskButtonPanel, 3, 0);
                 _rootLayout.Controls.Add(_bottomTaskButtonPanel, 5, 0);
-                _rootLayout.Controls.Add(_settingsButton, 6, 0);
-                _rootLayout.Controls.Add(_closeButton, 7, 0);
+                _rootLayout.Controls.Add(_overviewTaskButtonPanel, 6, 0);
+                _rootLayout.Controls.Add(_settingsButton, 7, 0);
+                _rootLayout.Controls.Add(_closeButton, 8, 0);
             }
             else
             {
-                foreach (var width in new[] { 102, 0, 10, 176, 34 })
+                foreach (var width in new[] { 102, 0, 10, 176, 52, 34 })
                     _rootLayout.ColumnStyles.Add(width == 0
                         ? new ColumnStyle(SizeType.Percent, 100)
                         : new ColumnStyle(SizeType.Absolute, Pixels(width)));
@@ -389,8 +403,10 @@ public sealed class MainForm : Form
                 _rootLayout.Controls.Add(_bottomTaskButtonPanel, 3, 2);
                 _rootLayout.Controls.Add(_connectionControls, 0, 2);
                 _rootLayout.SetColumnSpan(_connectionControls, 2);
-                _rootLayout.Controls.Add(_settingsButton, 4, 0);
-                _rootLayout.Controls.Add(_closeButton, 4, 2);
+                _rootLayout.Controls.Add(_overviewTaskButtonPanel, 4, 0);
+                _rootLayout.SetRowSpan(_overviewTaskButtonPanel, 3);
+                _rootLayout.Controls.Add(_settingsButton, 5, 0);
+                _rootLayout.Controls.Add(_closeButton, 5, 2);
             }
             _brandLabel.Image = docked ? _brandIcon : null;
             _brandLabel.Text = docked ? string.Empty : "원클릭업무포털";
@@ -402,6 +418,7 @@ public sealed class MainForm : Form
             _connectionControls.ColumnStyles[2].Width = Pixels(docked ? 61 : 73);
             foreach (var panel in new[] { _topTaskButtonPanel, _bottomTaskButtonPanel })
                 panel.ColumnStyles[0].Width = Pixels(docked ? 64 : 72);
+            ConfigureOverviewTaskButtonPanel(docked, scale);
             MinimumSize = Size.Empty;
             Size = new Size(Pixels(docked ? WidgetWidth : FloatingWidgetWidth), Pixels(docked ? WidgetHeight : FloatingWidgetHeight));
             MinimumSize = Size;
@@ -410,6 +427,7 @@ public sealed class MainForm : Form
         {
             _connectionControls.ResumeLayout(true);
             _rootLayout.ResumeLayout(true);
+            PositionApprovalBadge();
         }
     }
 
@@ -438,6 +456,8 @@ public sealed class MainForm : Form
     {
         ConfigureTaskButtonPanel(_topTaskButtonPanel);
         ConfigureTaskButtonPanel(_bottomTaskButtonPanel);
+        _overviewTaskButtonPanel.Dock = DockStyle.Fill;
+        _overviewTaskButtonPanel.Padding = new Padding(0);
 
         var tasks = PortalTaskCatalog.All;
         for (var index = 0; index < tasks.Count; index++)
@@ -456,8 +476,18 @@ public sealed class MainForm : Form
             button.Margin = new Padding(0);
             button.Dock = DockStyle.Fill;
             button.Click += async (_, _) => await RunWorkflowAsync(task.Kind);
+            if (task.Kind == PortalTaskKind.Approval)
+            {
+                _approvalButton = button;
+                SetApprovalBadge(null, "브라우저 연결 후 결재대기 건수를 확인합니다.");
+            }
+            if (task.Kind == PortalTaskKind.Budget)
+                _statusTip.SetToolTip(button, "학교회계 · 사업별 예산현황 조회");
             _taskButtons.Add(button);
-            (index < 3 ? _topTaskButtonPanel : _bottomTaskButtonPanel).Controls.Add(button, (index % 3) * 2, 0);
+            if (index < 6)
+                (index < 3 ? _topTaskButtonPanel : _bottomTaskButtonPanel).Controls.Add(button, (index % 3) * 2, 0);
+            else
+                _overviewTaskButtonPanel.Controls.Add(button);
         }
     }
 
@@ -467,6 +497,8 @@ public sealed class MainForm : Form
         {
             PortalTaskKind.NiceHome => ColorTranslator.FromHtml("#7DA9FF"),
             PortalTaskKind.EdufineHome => ColorTranslator.FromHtml("#E5EFC9"),
+            PortalTaskKind.Approval => ColorTranslator.FromHtml("#DCCEF7"),
+            PortalTaskKind.Budget => ColorTranslator.FromHtml("#F9D9BD"),
             _ => Color.FromArgb(241, 244, 248),
         };
     }
@@ -487,6 +519,46 @@ public sealed class MainForm : Form
         panel.Height = 28;
         panel.Margin = new Padding(0);
         panel.Padding = new Padding(0);
+    }
+
+    private void ConfigureOverviewTaskButtonPanel(bool docked, float scale)
+    {
+        var panel = _overviewTaskButtonPanel;
+        var buttons = panel.Controls.Cast<Control>().ToArray();
+        panel.SuspendLayout();
+        try
+        {
+            panel.Controls.Clear();
+            panel.ColumnStyles.Clear();
+            panel.RowStyles.Clear();
+            panel.ColumnCount = docked ? 3 : 1;
+            panel.RowCount = docked ? 1 : 3;
+            panel.Margin = new Padding((int)Math.Round((docked ? 3 : 1) * scale), 0, 0, 0);
+            panel.Padding = new Padding(0);
+            if (docked)
+            {
+                panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+                panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale));
+                panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+                panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            }
+            else
+            {
+                panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                panel.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+                panel.RowStyles.Add(new RowStyle(SizeType.Absolute, scale));
+                panel.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            }
+            for (var index = 0; index < buttons.Length; index++)
+            {
+                buttons[index].Padding = new Padding(0);
+                panel.Controls.Add(buttons[index], docked ? index * 2 : 0, docked ? 0 : index * 2);
+            }
+        }
+        finally
+        {
+            panel.ResumeLayout(true);
+        }
     }
 
     private static void StyleButton(Button button, string text, int width, Color backColor, Color foreColor)
@@ -627,6 +699,7 @@ public sealed class MainForm : Form
             _portalSessionTimer.Stop();
             _sessionCheckCancellationSource?.Cancel();
         }
+        UpdateApprovalMonitoring();
     }
 
     private void PositionAtBottomRight()
@@ -1017,6 +1090,7 @@ public sealed class MainForm : Form
         }
 
         _sessionCheckCancellationSource?.Cancel();
+        _approvalBadgeCancellationSource?.Cancel();
         _topDock?.SetExpanded(false);
         _workflowRunning = true;
         _workflowCancellationSource = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -1096,6 +1170,7 @@ public sealed class MainForm : Form
             if (!_isClosing && !IsDisposed && !Disposing)
             {
                 UpdateConnectionControls();
+                _ = RefreshApprovalBadgeAsync();
             }
         }
 
@@ -1157,6 +1232,8 @@ public sealed class MainForm : Form
                 else if (result.State == SessionSystemState.Expired)
                 {
                     _confirmedExpiredSystems.Add(result.SystemName);
+                    if (result.SystemName == "K-에듀파인")
+                        SetApprovalBadge(null, "K-에듀파인 재로그인 후 건수를 확인합니다.");
                 }
             }
 
@@ -1420,6 +1497,7 @@ public sealed class MainForm : Form
         _workflowCancellationSource?.Cancel();
         _sessionCheckCancellationSource?.Cancel();
         _portalSessionTimer.Stop();
+        StopApprovalMonitoring();
         RestoreSourceWindowOpacity();
         _sourceTransparent = false;
         _sourceWindow = IntPtr.Zero;
@@ -1438,6 +1516,8 @@ public sealed class MainForm : Form
 
     private void CheckSourceWindow()
     {
+        if (_approvalBadgeReadAt is { } readAt && DateTimeOffset.UtcNow - readAt > TimeSpan.FromMinutes(2))
+            SetApprovalBadge(null, "최근 결재대기 건수를 확인하지 못했습니다.");
         if (_sourceWindow == IntPtr.Zero)
         {
             return;
@@ -1445,6 +1525,8 @@ public sealed class MainForm : Form
 
         if (!NativeMethods.IsWindow(_sourceWindow))
         {
+            _connectionGeneration++;
+            StopApprovalMonitoring();
             _sessionCheckCancellationSource?.Cancel();
             _portalSessionTimer.Stop();
             _sourceWindow = IntPtr.Zero;
@@ -1607,6 +1689,13 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsWindow(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsIconic(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr GetWindow(IntPtr handle, uint command);

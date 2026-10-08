@@ -4,9 +4,10 @@ import vm from 'node:vm';
 import fs from 'node:fs';
 
 const source=fs.readFileSync(new URL('../PortalWorkflowController.cs',import.meta.url),'utf8');
-const script=source.split('private static string EdufineServerSessionCheckScript()')[1].split('"""')[1];
+const script=source.split('private static string EdufineServerSessionCheckScript(')[1].split('"""')[1];
+const renderScript=forceCheck=>script.replace('{{(forceCheck ? "true" : "false")}}',String(forceCheck));
 
-function setup({legacyV3,legacyV2}={}){
+function setup({legacyV3,legacyV2,existingV4Wrapper=false}={}){
   let now=1000000,previous=1000,kills=0,resetCount=0,frameworkResetCount=0;
   const requests=[],callbackLog=[];
   const app={gv_topFrame:{form:null}};
@@ -41,8 +42,13 @@ function setup({legacyV3,legacyV2}={}){
   const context=vm.createContext({nexacro:{getApplication:()=>app},Date:{now:()=>now}});
   if(legacyV3)context.__oneClickEdufineServerKeepAliveV3=legacyV3;
   if(legacyV2)context.__oneClickEdufineServerKeepAliveV2=legacyV2;
-  const run=()=>vm.runInContext(script,context);
-  const initialResult=run();f.TopFrame_ontimer(f,{timerid:1});
+  const run=(forceCheck=false)=>vm.runInContext(renderScript(forceCheck),context);
+  // Retain the existing wrapper/delegation shape and V4 ownership state, then install
+  // the new policy while its already-tagged request is still in flight.
+  const initialResult=existingV4Wrapper
+    ?vm.runInContext(renderScript(false).replaceAll('__oneClickSessionWrappedV5','__oneClickSessionWrappedV4'),context)
+    :run();
+  f.TopFrame_ontimer(f,{timerid:1});
   const complete=(index,{form=requests[index].form,errorCode=0,alive='Y'}={})=>{
     form.fv_aliveYn=alive;
     form[requests[index].callbackName](requests[index].transactionSvcID,errorCode,'');
@@ -137,6 +143,67 @@ test('an old error is reported before a retry and N remains terminal',()=>{
 
 test('in-flight checks are deduplicated',()=>{
   const s=setup();s.f.fnSessionCheck();assert.equal(s.requests.length,1);assert.equal(s.run(),'IN_FLIGHT');
+});
+
+test('zero-timer confirmation bypasses cached Y but never overlaps an official request',()=>{
+  const s=setup();s.complete(0);assert.equal(s.run(),'Y');
+  s.f.fv_nowUseEndTime=0;
+  assert.equal(s.run(true),'STARTED');assert.equal(s.requests.length,2);
+  assert.equal(s.run(true),'IN_FLIGHT');assert.equal(s.requests.length,2);
+  s.complete(1,{alive:'N'});
+  assert.equal(s.run(true),'N');assert.equal(s.requests.length,2);
+});
+
+test('first observation of an old Y cannot report current session health',()=>{
+  const s=setup();s.complete(0);s.advance(3600);
+  assert.equal(s.run(),'STARTED');assert.equal(s.requests.length,2);
+  assert.equal(s.run(),'IN_FLIGHT');
+});
+
+test('server Y with a missing, throwing or ineffective timer reset remains unconfirmed',()=>{
+  for(const [reset,expected] of [
+    [null,'Y_RESET_UNAVAILABLE'],
+    [()=>{throw new Error('reset failed')},'Y_RESET_FAILED'],
+    [()=>{},'Y_RESET_UNCONFIRMED']
+  ]){
+    const s=setup();s.f.fv_nowUseEndTime=0;s.f.fnResetUseEndCeckTimer=reset;
+    s.complete(0);
+    assert.equal(s.run(),expected);assert.equal(s.callbackLog.length,1);
+    assert.equal(s.run(true),expected);assert.equal(s.requests.length,1);
+    s.advance(61);assert.equal(s.run(true),'STARTED');assert.equal(s.requests.length,2);
+  }
+});
+
+test('reset confirmation can use positive displayed time when the internal counter is unavailable',()=>{
+  const s=setup();delete s.f.fv_nowUseEndTime;
+  s.f.divTopGrp={form:{staUseTime:{text:'0:00'}}};
+  s.f.fnResetUseEndCeckTimer=function(){this.divTopGrp.form.staUseTime.text='40:00'};
+  s.complete(0);assert.equal(s.run(),'Y');
+});
+
+test('forced zero-timer checks preserve legacy request and recovery barriers',()=>{
+  const active={inFlight:true,startedAt:1000000,completedAt:0,result:null,reported:false,recoveryRequired:false};
+  for(const options of [{legacyV3:{...active}},{legacyV2:{...active}}]){
+    const s=setup(options);
+    assert.match(s.run(true),/^LEGACY_(?:V3_)?IN_FLIGHT$/);
+    assert.equal(s.requests.length,0);
+    s.advance(301);assert.match(s.run(true),/^LEGACY_/);assert.equal(s.requests.length,0);
+  }
+});
+
+test('reinstalling the V5 callback policy over a V4 wrapper does not duplicate requests, resets or callbacks',()=>{
+  for(const alive of ['Y','N']){
+    const s=setup({existingV4Wrapper:true});
+    assert.equal(s.f.__oneClickSessionWrappedV4,true);
+    assert.equal(s.run(true),'IN_FLIGHT');assert.equal(s.requests.length,1);
+    assert.equal(s.f.__oneClickSessionWrappedV5,true);
+    s.complete(0,{alive});
+    assert.equal(s.run(),alive);assert.equal(s.resets(),alive==='Y'?1:0);
+    assert.equal(s.callbackLog.length,1);assert.equal(s.callbackLog[0].svcID,'sessionCheck');
+    s.complete(0,{alive});
+    assert.equal(s.resets(),alive==='Y'?1:0);assert.equal(s.callbackLog.length,2);
+    assert.equal(s.requests.length,1);
+  }
 });
 
 test('stale request enters recovery-required state without duplicate transmission',()=>{

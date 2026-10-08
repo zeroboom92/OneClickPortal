@@ -15,6 +15,8 @@ internal static class PortalTaskCatalog
         new PortalTaskDescriptor("에듀파인", PortalTaskKind.EdufineHome, "edufine"),
         new PortalTaskDescriptor("기안", PortalTaskKind.Draft, "draft"),
         new PortalTaskDescriptor("품의", PortalTaskKind.PurchaseRequest, "purchase"),
+        new PortalTaskDescriptor("결재", PortalTaskKind.Approval, "approval"),
+        new PortalTaskDescriptor("예산", PortalTaskKind.Budget, "budget"),
     };
 
     public static string GetName(PortalTaskKind kind)

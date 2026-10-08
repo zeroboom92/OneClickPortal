@@ -9,12 +9,20 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        // Preview alongside an installed copy without updater/startup/URI registration.
+        // A preview skips installation integration but must not share a browser with old copies.
         var updatePreview = args.Contains("--update-preview", StringComparer.OrdinalIgnoreCase);
         if (updatePreview || args.Contains("--dock-preview", StringComparer.OrdinalIgnoreCase))
         {
             ApplicationConfiguration.Initialize();
-            using var preview = new MainForm { Text = "원클릭 업무포털 · 테스트" };
+            using var previewGuard = PreviewInstanceGuard.TryAcquire(out var reason);
+            if (previewGuard is null)
+            {
+                MessageBox.Show(reason + "\r\n\r\n기존 원클릭의 트레이 아이콘을 오른쪽 클릭해 '완전히 종료'한 뒤 테스트본을 다시 실행해 주세요."
+                    + "\r\n구형 테스트본은 X로 닫아도 계속 실행 중일 수 있습니다.",
+                    "기존 원클릭 종료 필요", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            using var preview = new MainForm(closeToTray: false) { Text = "원클릭 업무포털 · 테스트" };
             if (updatePreview)
                 preview.Shown += (_, _) => preview.ShowUpdateAnnouncement(force: true);
             Application.Run(preview);
