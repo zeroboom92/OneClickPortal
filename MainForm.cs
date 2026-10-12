@@ -9,6 +9,7 @@ namespace BrowserThumbnailPrototype;
 public sealed partial class MainForm : Form
 {
     private TopDockController? _topDock;
+    private PortalBackgroundController? _background;
     private const int WidgetWidth = 800;
     private const int WidgetHeight = 40;
     private const int FloatingWidgetWidth = 558;
@@ -20,8 +21,8 @@ public sealed partial class MainForm : Form
     private readonly TableLayoutPanel _rootLayout = new();
     private readonly TableLayoutPanel _connectionControls = new();
     private readonly Panel _separator = CreateSeparator();
-    private readonly Label _brandLabel = new();
-    private readonly Label _statusLabel = new();
+    private readonly Label _brandLabel = new PortalTextLabel();
+    private readonly Label _statusLabel = new PortalTextLabel();
     private Image? _brandIcon;
     private readonly ComboBox _browserWindows = new();
     private readonly ToolTip _statusTip = new() { AutoPopDelay = 15000 };
@@ -88,6 +89,7 @@ public sealed partial class MainForm : Form
         // 고배율 화면에서도 고정 크기 UI가 글자와 함께 확대되도록 96 DPI를 디자인 기준으로 지정합니다.
         // 실제 컨트롤을 만든 뒤에 지정해야 창과 버튼까지 함께 자동 배율 조정됩니다.
         AutoScaleDimensions = new SizeF(96F, 96F);
+        _background = new PortalBackgroundController(this, () => _displayMode == PortalDisplayMode.TopDock);
         ApplyWindowOpacity();
         AppLogger.Info("Application", "프로그램 시작");
         if (!_systemSleepGuard.TryEnable())
@@ -99,6 +101,7 @@ public sealed partial class MainForm : Form
         Shown += (_, _) =>
         {
             _topDock = new TopDockController(this);
+            _topDock.RegisterDragControl(_brandLabel);
             ApplyDisplayMode(_displayMode);
             RefreshBrowserWindows();
             if (_sleepGuardFailureMessage is not null)
@@ -204,6 +207,7 @@ public sealed partial class MainForm : Form
         {
             StopApprovalMonitoring();
             _topDock?.Dispose();
+            _background?.Dispose();
             _statusTip.Dispose();
             _brandIcon?.Dispose();
             _statusLabel.Dispose();
@@ -346,6 +350,8 @@ public sealed partial class MainForm : Form
         _statusTip.SetToolTip(_closeButton, _closeToTray ? "트레이로 숨기기" : "테스트본 종료");
         EnableDragging(_rootLayout);
         EnableDragging(_statusLabel);
+        _rootLayout.Layout += (_, _) => UpdateWindowShape();
+        _statusLabel.TextChanged += (_, _) => UpdateWindowShape();
         UpdateConnectionControls();
         SetConnectionStatus("연결 안 됨");
     }
@@ -410,6 +416,7 @@ public sealed partial class MainForm : Form
             }
             _brandLabel.Image = docked ? _brandIcon : null;
             _brandLabel.Text = docked ? string.Empty : "원클릭업무포털";
+            _brandLabel.Cursor = docked ? Cursors.SizeWE : Cursors.SizeAll;
             _brandLabel.ForeColor = Color.FromArgb(42, 106, 190);
             _brandLabel.TextAlign = ContentAlignment.MiddleLeft;
             _brandLabel.Margin = docked ? new Padding(0, 0, Pixels(4), 0) : new Padding(0);
@@ -629,13 +636,14 @@ public sealed partial class MainForm : Form
             AppPreferences.GetEducationOfficeCode(),
             AppPreferences.GetWindowOpacityPercent(),
             _displayMode);
-        if (dialog.ShowDialog(this) != DialogResult.OK)
-        {
-            return;
-        }
-
+        var wasExpanded = _topDock?.IsExpanded == true;
+        using var autoHidePause = _topDock?.SuspendAutoHide();
+        dialog.WindowOpacityPreviewChanged += (_, _) =>
+            _background?.SetOpacityPercent(dialog.WindowOpacityPercent);
+        if (_topDock?.Enabled == true) _topDock.SetExpanded(true);
         try
         {
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
             var previousEducationOfficeCode = AppPreferences.GetEducationOfficeCode();
             var educationOfficeChanged = !string.Equals(
                 previousEducationOfficeCode,
@@ -675,11 +683,19 @@ public sealed partial class MainForm : Form
             AppLogger.Error("Preferences", "설정 저장 실패", exception);
             MessageBox.Show(this, exception.Message, "설정 저장 실패", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+        finally
+        {
+            // A slider preview is temporary until OK. Cancel, Escape, the window's X,
+            // or a failed save restores the value actually stored in preferences.
+            ApplyWindowOpacity();
+            if (!wasExpanded && _topDock?.Enabled == true) _topDock.SetExpanded(false);
+        }
     }
 
     private void ApplyWindowOpacity()
     {
-        Opacity = AppPreferences.GetWindowOpacityPercent() / 100d;
+        Opacity = 1;
+        _background?.SetOpacityPercent(AppPreferences.GetWindowOpacityPercent());
     }
 
     private void UpdateAutoRefreshTimer()
@@ -749,6 +765,19 @@ public sealed partial class MainForm : Form
         UpdateWindowShape();
     }
 
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (Visible) UpdateWindowShape();
+    }
+
+    protected override void WndProc(ref Message message)
+    {
+        base.WndProc(ref message);
+        if (message.Msg == 0x0047) // WM_WINDOWPOSCHANGED, including changes to TopMost/z-order.
+            _background?.Synchronize();
+    }
+
     private void UpdateWindowShape()
     {
         if (!IsHandleCreated || _applyingWindowShape || Width <= 0 || Height <= 0)
@@ -760,7 +789,13 @@ public sealed partial class MainForm : Form
         {
             _applyingWindowShape = true;
             var oldRegion = Region;
-            Region = _displayMode == PortalDisplayMode.TopDock ? PortalWindowShape.Create(Size, DeviceDpi) : null;
+            var foreground = PortalWindowShape.CreateForeground(this);
+            if (_displayMode == PortalDisplayMode.TopDock)
+            {
+                using var outline = PortalWindowShape.Create(Size, DeviceDpi);
+                foreground.Intersect(outline);
+            }
+            Region = foreground;
             oldRegion?.Dispose();
         }
         finally
@@ -821,6 +856,7 @@ public sealed partial class MainForm : Form
 
     private async Task ConnectSelectedBrowserAsync()
     {
+        using var autoHidePause = _topDock?.SuspendAutoHide();
         if (_browserWindows.SelectedItem is not BrowserWindowItem selected)
         {
             MessageBox.Show(this, "연결할 Chrome 또는 Edge 창을 선택하십시오.", "브라우저 창 선택", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -953,6 +989,7 @@ public sealed partial class MainForm : Form
 
     private async Task LaunchControlledEdgeAsync()
     {
+        using var autoHidePause = _topDock?.SuspendAutoHide();
         try
         {
             var edgePath = FindEdgeExecutable();
@@ -1072,6 +1109,7 @@ public sealed partial class MainForm : Form
 
     private async Task RunWorkflowAsync(PortalTaskKind taskKind)
     {
+        using var autoHidePause = _topDock?.SuspendAutoHide();
         if (_sourceWindow == IntPtr.Zero || !NativeMethods.IsWindow(_sourceWindow))
         {
             MessageBox.Show(this, "먼저 로그인된 Edge 창에 연결해 주세요.", "브라우저 연결 필요", MessageBoxButtons.OK, MessageBoxIcon.Information);

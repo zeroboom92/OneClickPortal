@@ -61,6 +61,7 @@ public sealed partial class MainForm
         _approvalBadge.Enabled = _approvalButton.Enabled;
         _approvalBadge.Visible = _approvalBadge.BadgeCount is not null && _approvalButton.Visible;
         if (Controls.GetChildIndex(_approvalBadge) != 0) _approvalBadge.BringToFront();
+        UpdateWindowShape();
     }
 
     private void UpdateApprovalMonitoring()

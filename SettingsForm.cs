@@ -14,6 +14,7 @@ internal sealed class SettingsForm : Form
     private readonly TrackBar _opacityTrackBar = new();
     private readonly Label _opacityValueLabel = new();
     private readonly Label _activeUsersLabel = new();
+    public event EventHandler? WindowOpacityPreviewChanged;
 
     public SettingsForm(
         bool windowsStartupEnabled,
@@ -161,21 +162,27 @@ internal sealed class SettingsForm : Form
 
         var opacityTitle = new Label
         {
-            Text = "프로그램 투명도",
+            Text = "배경 불투명도 · 실시간 미리보기",
             AutoSize = true,
             Location = new Point(25, 440),
             ForeColor = Color.FromArgb(45, 52, 64),
         };
         Controls.Add(opacityTitle);
 
-        _opacityTrackBar.Minimum = 70;
+        _opacityTrackBar.Minimum = 0;
         _opacityTrackBar.Maximum = 100;
-        _opacityTrackBar.TickFrequency = 10;
-        _opacityTrackBar.Value = Math.Clamp(windowOpacityPercent, 70, 100);
+        _opacityTrackBar.TickFrequency = 25;
+        _opacityTrackBar.Value = Math.Clamp(windowOpacityPercent, 0, 100);
+        _opacityTrackBar.AccessibleName = "배경 불투명도";
+        _opacityTrackBar.AccessibleDescription = "움직이면 배경에 바로 반영됩니다. 0%는 배경 완전 투명, 100%는 배경 불투명. 버튼과 글자는 항상 선명하게 유지합니다. 취소하면 원래 값으로 돌아갑니다.";
         _opacityTrackBar.Location = new Point(22, 462);
         _opacityTrackBar.Size = new Size(300, 40);
         _opacityTrackBar.BackColor = Color.White;
-        _opacityTrackBar.ValueChanged += (_, _) => UpdateOpacityLabel();
+        _opacityTrackBar.ValueChanged += (_, _) =>
+        {
+            UpdateOpacityLabel();
+            WindowOpacityPreviewChanged?.Invoke(this, EventArgs.Empty);
+        };
         Controls.Add(_opacityTrackBar);
 
         _opacityValueLabel.AutoSize = false;

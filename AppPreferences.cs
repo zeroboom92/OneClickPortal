@@ -210,7 +210,7 @@ internal static class AppPreferences
         var value = key?.GetValue(WindowOpacityValueName);
         if (value is int percent)
         {
-            return Math.Clamp(percent, 70, 100);
+            return Math.Clamp(percent, 0, 100);
         }
 
         return 100;
@@ -220,7 +220,7 @@ internal static class AppPreferences
     {
         using var key = Registry.CurrentUser.CreateSubKey(SettingsKeyPath, writable: true)
             ?? throw new InvalidOperationException("프로그램 설정을 저장하지 못했습니다.");
-        key.SetValue(WindowOpacityValueName, Math.Clamp(percent, 70, 100), RegistryValueKind.DWord);
+        key.SetValue(WindowOpacityValueName, Math.Clamp(percent, 0, 100), RegistryValueKind.DWord);
     }
 
     public static Point? GetWindowLocation()
