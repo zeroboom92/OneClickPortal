@@ -9,7 +9,7 @@ internal static class UpdateAnnouncement
     public static string Summary => UpdateHistory.Current.Summary;
     public static string CurrentVersion => typeof(UpdateAnnouncement).Assembly
         .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+', 2)[0]
-        ?? typeof(UpdateAnnouncement).Assembly.GetName().Version?.ToString(3) ?? "1.3.1";
+        ?? typeof(UpdateAnnouncement).Assembly.GetName().Version?.ToString(3) ?? "1.3.2";
 
     public static bool ShouldShow(string? acknowledgedVersion) =>
         !string.Equals(acknowledgedVersion, CurrentVersion, StringComparison.Ordinal);

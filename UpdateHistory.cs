@@ -16,6 +16,14 @@ internal static class UpdateHistory
     // 1.0.1은 로컬 수정·미배포로 기록되어 있어 포함하지 않습니다.
     public static IReadOnlyList<UpdateRelease> Releases { get; } = Array.AsReadOnly(new UpdateRelease[]
     {
+        // v1.3.2: notification-button announcement prepared for user review.
+        new("1.3.2", new DateOnly(2026, 10, 14),
+            "종 버튼으로 알림을 확인하세요",
+            "설정 옆 종 버튼에서 알림을 모아 확인하세요.\n미확인 알림은 빨간 점으로 표시합니다.",
+            ReadOnlyChanges(
+                "설정 옆 종 버튼을 누르면 알림 목록이 열립니다.",
+                "미확인 알림은 빨간 점으로 표시하고, 확인한 알림도 기록에 남깁니다.",
+                "현재 결재대기 건수 증가 알림을 지원합니다.")),
         // v1.3.1: RELEASE_NOTES.md, HANDOFF.md.
         new("1.3.1", new DateOnly(2026, 10, 14),
             "접혀도 펼침 버튼은 계속 보여요",
