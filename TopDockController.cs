@@ -31,6 +31,7 @@ internal sealed class TopDockController : IDisposable, IMessageFilter
     private long _lastTick;
     private long _autoCollapseAt;
     private const int AutoCollapseDelay = 2000;
+    private const string ExpandText = "▼ 업무포털 펼치기";
     private const string KeyPath = @"Software\OneClickPortal";
 
     public bool Enabled { get; private set; }
@@ -43,16 +44,19 @@ internal sealed class TopDockController : IDisposable, IMessageFilter
         {
             Text = "업무포털 손잡이", FormBorderStyle = FormBorderStyle.None,
             ShowInTaskbar = false, TopMost = true, StartPosition = FormStartPosition.Manual,
-            BackColor = Color.White, AutoScaleMode = AutoScaleMode.None, KeyPreview = true,
+            BackColor = Color.FromArgb(42, 106, 190), AutoScaleMode = AutoScaleMode.None, KeyPreview = true,
         };
         _button = new Button
         {
-            Dock = DockStyle.Fill, FlatStyle = FlatStyle.Flat, Text = "▼ 업무포털",
-            BackColor = Color.White, ForeColor = Color.FromArgb(42, 106, 190),
-            Font = new Font("맑은 고딕", 9), Cursor = Cursors.Hand,
+            Dock = DockStyle.Fill, FlatStyle = FlatStyle.Flat, Text = ExpandText,
+            BackColor = Color.FromArgb(42, 106, 190), ForeColor = Color.White,
+            UseVisualStyleBackColor = false,
+            Font = new Font("맑은 고딕", 9, FontStyle.Bold), Cursor = Cursors.Hand,
             AccessibleName = "마우스를 올리면 업무포털 펼치기. 클릭으로 접기. 드래그로 위치 이동",
         };
-        _button.FlatAppearance.BorderColor = Color.FromArgb(218, 225, 235);
+        _button.FlatAppearance.BorderColor = Color.FromArgb(31, 83, 152);
+        _button.FlatAppearance.MouseOverBackColor = Color.FromArgb(35, 91, 166);
+        _button.FlatAppearance.MouseDownBackColor = Color.FromArgb(28, 75, 139);
         _handle.Controls.Add(_button);
         RegisterDragControl(_button);
         _button.MouseEnter += (_, _) => TryExpandOnHover();
@@ -72,7 +76,7 @@ internal sealed class TopDockController : IDisposable, IMessageFilter
         {
             if (e.CloseReason != CloseReason.UserClosing) return;
             e.Cancel = true;
-            _portal.Hide();
+            SetExpanded(false);
         };
         _animation.Tick += (_, _) =>
         {
@@ -145,7 +149,7 @@ internal sealed class TopDockController : IDisposable, IMessageFilter
         _expanded = expanded;
         _hoverOpenSuppressed = !expanded;
         _autoCollapseAt = 0;
-        _button.Text = expanded ? "▲ 접기" : "▼ 업무포털";
+        _button.Text = expanded ? "▲ 접기" : ExpandText;
         if (_portal.Visible)
         {
             _lastTick = Environment.TickCount64;
@@ -172,9 +176,10 @@ internal sealed class TopDockController : IDisposable, IMessageFilter
         _applying = true;
         try
         {
-            var bounds = Screen.FromPoint(_anchor).Bounds;
+            var screen = Screen.FromPoint(_anchor);
+            var bounds = screen.WorkingArea;
             _anchor = new Point(Math.Clamp(_anchor.X, bounds.Left,
-                Math.Max(bounds.Left, bounds.Right - _portal.Width)), bounds.Top);
+                Math.Max(bounds.Left, bounds.Right - _portal.Width)), screen.Bounds.Top);
             var shown = (int)Math.Round(_portal.Height * (1 - Math.Pow(1 - _progress, 3)));
             _portal.Location = new Point(_anchor.X, bounds.Top - _portal.Height + shown);
             // Clip the hidden portion so it cannot appear on a monitor above this one.
@@ -186,8 +191,11 @@ internal sealed class TopDockController : IDisposable, IMessageFilter
             _portal.Region = shape;
             old?.Dispose();
             var scale = _portal.DeviceDpi / 96f;
-            _handle.Size = new Size((int)(132 * scale), (int)(26 * scale));
-            _handle.Location = new Point(_anchor.X + (_portal.Width - _handle.Width) / 2, bounds.Top + shown);
+            _handle.Size = new Size(Math.Min(bounds.Width, (int)Math.Round(172 * scale)),
+                (int)Math.Round(32 * scale));
+            var handleLeft = Math.Clamp(_anchor.X + (_portal.Width - _handle.Width) / 2,
+                bounds.Left, Math.Max(bounds.Left, bounds.Right - _handle.Width));
+            _handle.Location = new Point(handleLeft, bounds.Top + shown);
             _portal.TopMost = true;
         }
         finally { _applying = false; }
@@ -415,7 +423,7 @@ internal sealed class TopDockController : IDisposable, IMessageFilter
         _autoCollapseAt = 0;
         _expanded = false;
         _progress = 0;
-        _button.Text = "▼ 업무포털";
+        _button.Text = ExpandText;
     }
 
     private void SaveAnchor()

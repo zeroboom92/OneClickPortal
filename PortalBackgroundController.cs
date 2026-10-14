@@ -45,7 +45,7 @@ internal sealed class PortalBackgroundController : IDisposable
         try
         {
             var hiddenHeight = _isDocked()
-                ? Math.Clamp(Screen.FromPoint(new Point(_portal.Left, _portal.Bottom)).Bounds.Top - _portal.Top,
+                ? Math.Clamp(Screen.FromPoint(new Point(_portal.Left, _portal.Bottom)).WorkingArea.Top - _portal.Top,
                     0, _portal.Height)
                 : 0;
             if (!_portal.IsHandleCreated || !_portal.Visible || _portal.WindowState == FormWindowState.Minimized

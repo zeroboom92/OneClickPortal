@@ -143,7 +143,8 @@ public sealed partial class MainForm : Form
             if (_closeToTray && !_exitRequested && e.CloseReason == CloseReason.UserClosing)
             {
                 e.Cancel = true;
-                Hide();
+                if (_topDock?.Enabled == true) _topDock.SetExpanded(false);
+                else Hide();
                 return;
             }
 
@@ -366,7 +367,11 @@ public sealed partial class MainForm : Form
         _closeButton.AccessibleName = _closeToTray ? "트레이로 숨기기" : "테스트본 종료";
         _closeButton.Margin = new Padding(4, 0, 0, 0);
         _closeButton.Dock = DockStyle.Fill;
-        _closeButton.Click += (_, _) => Close();
+        _closeButton.Click += (_, _) =>
+        {
+            if (_topDock?.Enabled == true) _topDock.SetExpanded(false);
+            else Close();
+        };
         _rootLayout.Controls.Add(_closeButton, 9, 0);
         _statusTip.SetToolTip(_refreshButton, "브라우저 창 목록 및 결재 건수 다시 확인");
         _statusTip.SetToolTip(_settingsButton, "설정");
@@ -383,6 +388,11 @@ public sealed partial class MainForm : Form
     {
         CloseNotificationCenter();
         var docked = mode == PortalDisplayMode.TopDock;
+        _closeButton.Text = docked ? "▲" : "X";
+        _closeButton.AccessibleName = docked ? "메뉴 접기" : _closeToTray ? "트레이로 숨기기" : "테스트본 종료";
+        _statusTip.SetToolTip(_closeButton, docked
+            ? "메뉴 접기 · 펼침 버튼은 계속 표시됩니다."
+            : _closeToTray ? "트레이로 숨기기" : "테스트본 종료");
         var scale = DeviceDpi / 96f;
         int Pixels(int value) => (int)Math.Round(value * scale);
         _rootLayout.SuspendLayout();

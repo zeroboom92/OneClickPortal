@@ -16,6 +16,16 @@ internal static class UpdateHistory
     // 1.0.1은 로컬 수정·미배포로 기록되어 있어 포함하지 않습니다.
     public static IReadOnlyList<UpdateRelease> Releases { get; } = Array.AsReadOnly(new UpdateRelease[]
     {
+        // v1.3.1: RELEASE_NOTES.md, HANDOFF.md.
+        new("1.3.1", new DateOnly(2026, 10, 14),
+            "접혀도 펼침 버튼은 계속 보여요",
+            "메뉴를 접으면 파란 업무포털 펼치기 버튼이 남습니다.\n상단의 ▲ 버튼은 메뉴만 접습니다.",
+            ReadOnlyChanges(
+                "접힌 상태에서 파란색 '▼ 업무포털 펼치기' 버튼을 더 크게 표시합니다.",
+                "상단 메뉴 오른쪽 X를 ▲ 접기로 바꿔 본문만 접고 펼침 버튼을 유지합니다.",
+                "상단 메뉴와 손잡이에서 Alt+F4를 눌러도 펼침 버튼을 남깁니다. 완전히 종료하려면 트레이 메뉴를 사용합니다.",
+                "펼침 버튼을 작업표시줄과 화면 경계 안쪽에 배치합니다.",
+                "마우스를 올려 펼치기, 클릭, 좌우 이동과 이탈 후 2초 자동 접기는 유지합니다.")),
         // v1.3.0: RELEASE_NOTES.md, HANDOFF.md.
         new("1.3.0", new DateOnly(2026, 10, 14),
             "작은 종으로 새 결재 알림을 확인하세요",

@@ -19,9 +19,10 @@ internal sealed class UpdateFeaturePreview : Control
         BackColor = Color.White;
         TabStop = false;
         AccessibleRole = AccessibleRole.Graphic;
-        AccessibleName = "작은 알림창과 이전 업데이트 보기 안내";
-        AccessibleDescription = "설정 옆 종을 누르면 간단한 알림창이 열립니다. "
-            + "미확인 알림은 점으로 표시하며 확인한 기록도 보관합니다. 이전 업데이트 보기에서 과거 변경 내용을 확인합니다. "
+        AccessibleName = "접혀도 남아 있는 업무포털 펼침 버튼 안내";
+        AccessibleDescription = "메뉴가 접히면 파란색 '▼ 업무포털 펼치기' 버튼이 남습니다. "
+            + "마우스를 올리거나 클릭하면 펼쳐지고, 상단의 '▲ 접기'를 누르면 메뉴만 접힙니다. "
+            + "설정 옆 종에서 기존 알림을 확인하며, 프로그램 종료는 트레이 메뉴의 '완전히 종료'를 사용합니다. "
             + "알림 기능은 현재 테스트 중입니다. 현재는 화면의 결재대기 건수 증가를 알리며, 교외체험학습과 결석신고 알림은 아직 연결되지 않았습니다.";
     }
 
@@ -45,54 +46,49 @@ internal sealed class UpdateFeaturePreview : Control
             graphics.FillPath(background, card);
             graphics.DrawPath(border, card);
         }
-        DrawText(graphics, "작은 종으로 간편하게 확인", R(20, 12, 310, 24), 14 * scale, Ink, bold: true);
-        DrawSurface(graphics, R(364, 14, 148, 23), Color.FromArgb(255, 242, 222),
-            Color.FromArgb(255, 242, 222), 6 * scale);
-        DrawText(graphics, "현재 테스트 중입니다", R(364, 14, 148, 23), 11 * scale,
-            Color.FromArgb(147, 91, 26), bold: true, alignment: TextFormatFlags.HorizontalCenter);
+        DrawText(graphics, "접혀도 펼침 버튼은 항상 보입니다", R(20, 12, 492, 24),
+            14 * scale, Ink, bold: true);
+        DrawText(graphics, "접힌 상태", R(20, 48, 232, 22), 13 * scale, Ink, bold: true);
+        DrawText(graphics, "펼친 상태", R(280, 48, 232, 22), 13 * scale, Ink, bold: true);
 
-        DrawSurface(graphics, R(20, 48, 492, 35), Color.White, Color.FromArgb(221, 228, 237), 6 * scale);
-        DrawTaskButton(graphics, R(27, 54, 30, 23), Color.FromArgb(229, 239, 255), "원", scale, Blue);
-        DrawTaskButton(graphics, R(62, 54, 78, 23), Color.FromArgb(241, 244, 248), "Edge ▾", scale);
-        DrawTaskButton(graphics, R(145, 54, 61, 23), Color.FromArgb(125, 169, 255), "나이스", scale);
-        DrawTaskButton(graphics, R(211, 54, 43, 23), Color.FromArgb(241, 244, 248), "복무", scale);
-        DrawTaskButton(graphics, R(259, 54, 43, 23), Color.FromArgb(241, 244, 248), "출장", scale);
-        DrawTaskButton(graphics, R(307, 54, 43, 23), Color.FromArgb(220, 206, 247), "결재", scale);
-        DrawTaskButton(graphics, R(355, 54, 43, 23), Color.FromArgb(249, 217, 189), "예산", scale);
-        DrawSurface(graphics, R(436, 52, 28, 27), Color.FromArgb(241, 244, 248), Color.FromArgb(220, 225, 232), 3 * scale);
-        DrawSurface(graphics, R(473, 52, 28, 27), Color.FromArgb(241, 244, 248), Color.FromArgb(220, 225, 232), 3 * scale);
-        DrawSystemIcon(graphics, "\uEA8F", R(436, 52, 28, 27), scale);
-        DrawSystemIcon(graphics, "\uE713", R(473, 52, 28, 27), scale);
-        using (var unread = new SolidBrush(Color.FromArgb(218, 64, 77)))
-            graphics.FillEllipse(unread, R(454, 54, 5, 5));
-        using (var connector = new Pen(Color.FromArgb(180, 203, 234), scale))
-            graphics.DrawLine(connector, 450 * scale, 83 * scale, 450 * scale, 94 * scale);
-
-        DrawText(graphics, "종을 누르면 알림", R(24, 108, 250, 23), 13 * scale, Ink, bold: true);
-        DrawText(graphics, "작은 창에서 바로 확인하세요.", R(24, 132, 250, 20), 12 * scale, Muted);
-        DrawText(graphics, "미확인 점·기록 보관", R(24, 164, 250, 23), 13 * scale, Ink, bold: true);
-        DrawText(graphics, "확인한 알림도 목록에 남습니다.", R(24, 188, 250, 20), 12 * scale, Muted);
-        DrawText(graphics, "이전 업데이트 보기", R(24, 220, 250, 23), 13 * scale, Ink, bold: true);
-        DrawText(graphics, "지나간 버전도 다시 확인하세요.", R(24, 244, 250, 20), 12 * scale, Muted);
-
-        // A compact example uses approval-count alerts only; student monitoring is not connected.
-        DrawSurface(graphics, R(288, 94, 224, 163), Color.White, Color.FromArgb(218, 224, 233), 3 * scale);
-        DrawText(graphics, "알림", R(300, 102, 60, 24), 13 * scale, Ink, bold: true);
-        DrawText(graphics, "모두 확인", R(432, 106, 59, 18), 10 * scale, Muted);
-        DrawText(graphics, "×", R(490, 102, 18, 24), 14 * scale, Muted, alignment: TextFormatFlags.HorizontalCenter);
-        using (var divider = new Pen(Color.FromArgb(237, 240, 245), scale))
+        DrawSurface(graphics, R(20, 78, 232, 109), Color.White, Color.FromArgb(221, 228, 237), 6 * scale);
+        DrawSurface(graphics, R(280, 78, 232, 109), Color.White, Color.FromArgb(221, 228, 237), 6 * scale);
+        using (var screenEdge = new Pen(Color.FromArgb(221, 228, 237), scale))
         {
-            graphics.DrawLine(divider, 289 * scale, 132 * scale, 511 * scale, 132 * scale);
-            graphics.DrawLine(divider, 300 * scale, 193 * scale, 500 * scale, 193 * scale);
+            graphics.DrawLine(screenEdge, 26 * scale, 89 * scale, 246 * scale, 89 * scale);
+            graphics.DrawLine(screenEdge, 286 * scale, 89 * scale, 506 * scale, 89 * scale);
         }
-        using (var unread = new SolidBrush(Blue)) graphics.FillEllipse(unread, R(300, 149, 5, 5));
-        DrawText(graphics, "결재대기 2건 증가", R(312, 141, 184, 23), 12 * scale, Ink, bold: true);
-        DrawText(graphics, "오늘 09:20", R(312, 166, 184, 18), 10 * scale, Muted);
-        DrawText(graphics, "결재대기 1건 증가", R(312, 201, 184, 23), 12 * scale, Ink);
-        DrawText(graphics, "오늘 09:05", R(312, 226, 184, 18), 10 * scale, Muted);
 
-        DrawText(graphics, "교외체험학습·결석신고 알림은 아직 연결되지 않았습니다.",
-            R(20, 274, 492, 16), 10 * scale, Muted);
+        // The blue handle matches the real 172 x 32 px control at 96 DPI.
+        DrawSurface(graphics, R(50, 89, 172, 32), Blue, Blue, 3 * scale);
+        DrawText(graphics, "▼ 업무포털 펼치기", R(50, 89, 172, 32), 12 * scale, Color.White,
+            bold: true, alignment: TextFormatFlags.HorizontalCenter);
+        DrawText(graphics, "올리거나 클릭하여 펼치기", R(30, 139, 212, 24), 11 * scale, Muted,
+            alignment: TextFormatFlags.HorizontalCenter);
+
+        // The bell remains beside settings; the former top-right X now folds the menu.
+        DrawSurface(graphics, R(286, 92, 220, 28), Color.White, Color.FromArgb(221, 228, 237), 3 * scale);
+        DrawTaskButton(graphics, R(292, 97, 76, 18), Color.FromArgb(229, 239, 255), "업무 메뉴", scale, Blue);
+        DrawSurface(graphics, R(372, 94, 26, 24), Color.FromArgb(241, 244, 248), Color.FromArgb(220, 225, 232), 3 * scale);
+        DrawSurface(graphics, R(402, 94, 26, 24), Color.FromArgb(241, 244, 248), Color.FromArgb(220, 225, 232), 3 * scale);
+        DrawSystemIcon(graphics, "\uEA8F", R(372, 94, 26, 24), scale);
+        DrawSystemIcon(graphics, "\uE713", R(402, 94, 26, 24), scale);
+        using (var unread = new SolidBrush(Color.FromArgb(218, 64, 77)))
+            graphics.FillEllipse(unread, R(390, 96, 4, 4));
+        DrawTaskButton(graphics, R(432, 94, 68, 24), Color.FromArgb(229, 239, 255), "▲ 접기", scale, Blue);
+        DrawSurface(graphics, R(310, 122, 172, 32), Blue, Blue, 3 * scale);
+        DrawText(graphics, "▲ 접기", R(310, 122, 172, 32), 12 * scale, Color.White,
+            bold: true, alignment: TextFormatFlags.HorizontalCenter);
+        DrawText(graphics, "상단 ▲ 접기로 메뉴만 접기", R(290, 160, 212, 22), 11 * scale, Muted,
+            alignment: TextFormatFlags.HorizontalCenter);
+
+        DrawSurface(graphics, R(20, 202, 492, 68), Color.White, Color.FromArgb(221, 228, 237), 6 * scale);
+        DrawText(graphics, "알림 확인", R(34, 210, 212, 22), 12 * scale, Ink, bold: true);
+        DrawText(graphics, "설정 옆 종에서 확인", R(34, 235, 212, 22), 11 * scale, Muted);
+        DrawText(graphics, "프로그램 종료", R(284, 210, 212, 22), 12 * scale, Ink, bold: true);
+        DrawText(graphics, "트레이 → 완전히 종료", R(284, 235, 212, 22), 11 * scale, Muted);
+        DrawText(graphics, "알림은 테스트 중이며, 교외체험학습·결석신고는 아직 연결되지 않았습니다.",
+            R(20, 278, 492, 14), 10 * scale, Muted);
     }
 
     private static void DrawTaskButton(Graphics graphics, Rectangle bounds, Color color, string text, float scale,
