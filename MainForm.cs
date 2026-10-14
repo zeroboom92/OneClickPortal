@@ -10,9 +10,9 @@ public sealed partial class MainForm : Form
 {
     private TopDockController? _topDock;
     private PortalBackgroundController? _background;
-    private const int WidgetWidth = 800;
+    private const int WidgetWidth = 832;
     private const int WidgetHeight = 40;
-    private const int FloatingWidgetWidth = 558;
+    private const int FloatingWidgetWidth = 590;
     private const int FloatingWidgetHeight = 66;
     private PortalDisplayMode _displayMode = AppPreferences.GetDisplayMode();
     private bool _changingDisplayMode = true;
@@ -67,9 +67,16 @@ public sealed partial class MainForm : Form
     private bool _sessionNoticeIsSessionStatus;
     private string? _sleepGuardFailureMessage;
 
-    public MainForm(bool closeToTray = true)
+    public MainForm(bool closeToTray = true) : this(closeToTray, new NotificationCenter(
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "OneClickPortal", closeToTray ? "notifications.json" : "notifications-preview.json")))
+    {
+    }
+
+    internal MainForm(bool closeToTray, NotificationCenter notificationCenter)
     {
         _closeToTray = closeToTray;
+        _notificationCenter = notificationCenter;
         Text = "원클릭 업무포털";
         StartPosition = FormStartPosition.Manual;
         FormBorderStyle = FormBorderStyle.None;
@@ -86,6 +93,7 @@ public sealed partial class MainForm : Form
         InitializeApprovalBadge();
         ConfigureWindowLayout(_displayMode);
         InitializeTray();
+        InitializeNotifications();
         // 고배율 화면에서도 고정 크기 UI가 글자와 함께 확대되도록 96 DPI를 디자인 기준으로 지정합니다.
         // 실제 컨트롤을 만든 뒤에 지정해야 창과 버튼까지 함께 자동 배율 조정됩니다.
         AutoScaleDimensions = new SizeF(96F, 96F);
@@ -142,6 +150,7 @@ public sealed partial class MainForm : Form
             SystemEvents.SessionSwitch -= OnWindowsSessionSwitch;
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             _isClosing = true;
+            CloseNotificationCenter();
             _healthTimer.Stop();
             _portalSessionTimer.Stop();
             StopApprovalMonitoring();
@@ -184,6 +193,8 @@ public sealed partial class MainForm : Form
             }
         };
         _trayMenu.Items.Add(_dockMenuItem);
+        _notificationMenuItem.Click += (_, _) => OpenNotificationCenter();
+        _trayMenu.Items.Add(_notificationMenuItem);
         _trayMenu.Items.Add("업데이트 내용 보기", null, (_, _) => ShowUpdateAnnouncement(force: true));
         _trayMenu.Items.Add(new ToolStripSeparator());
         _trayMenu.Items.Add("완전히 종료", null, (_, _) =>
@@ -198,6 +209,7 @@ public sealed partial class MainForm : Form
         {
             if (e.Button == MouseButtons.Left) BringWidgetToFront();
         };
+        _trayIcon.BalloonTipClicked += (_, _) => OpenNotificationCenter();
         _trayIcon.Visible = true;
     }
 
@@ -205,6 +217,7 @@ public sealed partial class MainForm : Form
     {
         if (disposing)
         {
+            DisposeNotifications();
             StopApprovalMonitoring();
             _topDock?.Dispose();
             _background?.Dispose();
@@ -251,11 +264,11 @@ public sealed partial class MainForm : Form
     private void BuildUi()
     {
         _rootLayout.Dock = DockStyle.Fill;
-        _rootLayout.ColumnCount = 9;
+        _rootLayout.ColumnCount = 10;
         _rootLayout.RowCount = 1;
         _rootLayout.Padding = new Padding(8, 6, 8, 6);
         _rootLayout.BackColor = Color.White;
-        foreach (var width in new[] { 30, 251, 8, 163, 3, 163, 102, 32, 32 })
+        foreach (var width in new[] { 30, 251, 8, 163, 3, 163, 102, 32, 32, 32 })
             _rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, width));
         _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(_rootLayout);
@@ -331,20 +344,30 @@ public sealed partial class MainForm : Form
         _rootLayout.Controls.Add(_bottomTaskButtonPanel, 5, 0);
         _rootLayout.Controls.Add(_overviewTaskButtonPanel, 6, 0);
 
-        StyleButton(_settingsButton, "⚙", 30, Color.FromArgb(241, 244, 248), Color.FromArgb(74, 84, 100));
-        _settingsButton.Font = new Font("Segoe UI Symbol", 12F, FontStyle.Regular);
+        StyleButton(_notificationsButton, string.Empty, 30, Color.FromArgb(241, 244, 248), Color.FromArgb(74, 84, 100));
+        _notificationsButton.AccessibleName = "알림";
+        _notificationsButton.Click += (_, _) => ToggleNotificationCenter();
+        _notificationsButton.Margin = new Padding(4, 0, 0, 0);
+        _notificationsButton.Dock = DockStyle.Fill;
+        _rootLayout.Controls.Add(_notificationsButton, 7, 0);
+
+        StyleButton(_settingsButton, "\uE713", 30, Color.FromArgb(241, 244, 248), Color.FromArgb(74, 84, 100));
+        using (var iconFont = new Font("Segoe Fluent Icons", 12F))
+            _settingsButton.Font = new Font(iconFont.Name == "Segoe Fluent Icons"
+                ? iconFont.Name : "Segoe MDL2 Assets", 12F, FontStyle.Regular);
+        _settingsButton.TextAlign = ContentAlignment.MiddleCenter;
         _settingsButton.AccessibleName = "설정";
         _settingsButton.Click += (_, _) => OpenSettings();
         _settingsButton.Margin = new Padding(4, 0, 0, 0);
         _settingsButton.Dock = DockStyle.Fill;
-        _rootLayout.Controls.Add(_settingsButton, 7, 0);
+        _rootLayout.Controls.Add(_settingsButton, 8, 0);
         StyleButton(_closeButton, "X", 30, Color.FromArgb(255, 239, 241), Color.FromArgb(160, 70, 82));
         _closeButton.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
         _closeButton.AccessibleName = _closeToTray ? "트레이로 숨기기" : "테스트본 종료";
         _closeButton.Margin = new Padding(4, 0, 0, 0);
         _closeButton.Dock = DockStyle.Fill;
         _closeButton.Click += (_, _) => Close();
-        _rootLayout.Controls.Add(_closeButton, 8, 0);
+        _rootLayout.Controls.Add(_closeButton, 9, 0);
         _statusTip.SetToolTip(_refreshButton, "브라우저 창 목록 및 결재 건수 다시 확인");
         _statusTip.SetToolTip(_settingsButton, "설정");
         _statusTip.SetToolTip(_closeButton, _closeToTray ? "트레이로 숨기기" : "테스트본 종료");
@@ -358,6 +381,7 @@ public sealed partial class MainForm : Form
 
     private void ConfigureWindowLayout(PortalDisplayMode mode)
     {
+        CloseNotificationCenter();
         var docked = mode == PortalDisplayMode.TopDock;
         var scale = DeviceDpi / 96f;
         int Pixels(int value) => (int)Math.Round(value * scale);
@@ -374,13 +398,13 @@ public sealed partial class MainForm : Form
             _rootLayout.Controls.Clear();
             _rootLayout.ColumnStyles.Clear();
             _rootLayout.RowStyles.Clear();
-            _rootLayout.ColumnCount = docked ? 9 : 6;
+            _rootLayout.ColumnCount = docked ? 10 : 7;
             _rootLayout.RowCount = docked ? 1 : 3;
             _rootLayout.Padding = new Padding(Pixels(8), Pixels(docked ? 6 : 4), Pixels(8), Pixels(docked ? 6 : 4));
             _separator.Dock = DockStyle.Fill;
             if (docked)
             {
-                foreach (var width in new[] { 30, 251, 8, 163, 3, 163, 102, 32, 32 })
+                foreach (var width in new[] { 30, 251, 8, 163, 3, 163, 102, 32, 32, 32 })
                     _rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Pixels(width)));
                 _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
                 _rootLayout.Controls.Add(_brandLabel, 0, 0);
@@ -389,12 +413,13 @@ public sealed partial class MainForm : Form
                 _rootLayout.Controls.Add(_topTaskButtonPanel, 3, 0);
                 _rootLayout.Controls.Add(_bottomTaskButtonPanel, 5, 0);
                 _rootLayout.Controls.Add(_overviewTaskButtonPanel, 6, 0);
-                _rootLayout.Controls.Add(_settingsButton, 7, 0);
-                _rootLayout.Controls.Add(_closeButton, 8, 0);
+                _rootLayout.Controls.Add(_notificationsButton, 7, 0);
+                _rootLayout.Controls.Add(_settingsButton, 8, 0);
+                _rootLayout.Controls.Add(_closeButton, 9, 0);
             }
             else
             {
-                foreach (var width in new[] { 102, 0, 10, 176, 52, 34 })
+                foreach (var width in new[] { 102, 0, 10, 176, 52, 32, 34 })
                     _rootLayout.ColumnStyles.Add(width == 0
                         ? new ColumnStyle(SizeType.Percent, 100)
                         : new ColumnStyle(SizeType.Absolute, Pixels(width)));
@@ -411,8 +436,9 @@ public sealed partial class MainForm : Form
                 _rootLayout.SetColumnSpan(_connectionControls, 2);
                 _rootLayout.Controls.Add(_overviewTaskButtonPanel, 4, 0);
                 _rootLayout.SetRowSpan(_overviewTaskButtonPanel, 3);
-                _rootLayout.Controls.Add(_settingsButton, 5, 0);
-                _rootLayout.Controls.Add(_closeButton, 5, 2);
+                _rootLayout.Controls.Add(_notificationsButton, 5, 0);
+                _rootLayout.Controls.Add(_settingsButton, 6, 0);
+                _rootLayout.Controls.Add(_closeButton, 6, 2);
             }
             _brandLabel.Image = docked ? _brandIcon : null;
             _brandLabel.Text = docked ? string.Empty : "원클릭업무포털";
@@ -870,6 +896,7 @@ public sealed partial class MainForm : Form
             return;
         }
 
+        ResetNotificationObservations();
         _sourceWindow = selected.Handle;
         _connectionGeneration++;
         _sourceTransparent = false;
@@ -933,7 +960,8 @@ public sealed partial class MainForm : Form
         {
             keepPendingTaskAfterFailure = _pendingTaskKind is not null;
             _pendingTaskSystemName = keepPendingTaskAfterFailure ? exception.SystemName : null;
-            _confirmedExpiredSystems.Add(exception.SystemName);
+            if (_confirmedExpiredSystems.Add(exception.SystemName) && exception.SystemName == "K-에듀파인")
+                ResetNotificationObservations();
             AppLogger.Error("Connection", $"{exception.SystemName} 세션 종료 상태지만 브라우저 연결과 다른 시스템 감시는 유지합니다.", exception);
             if (_sourceWindow != IntPtr.Zero && NativeMethods.IsWindow(_sourceWindow))
             {
@@ -1018,6 +1046,7 @@ public sealed partial class MainForm : Form
             EdgeIntegrationPolicy.PrepareControlledProfile(educationOffice);
             startInfo.ArgumentList.Add(educationOffice.PortalUri.AbsoluteUri);
             Process.Start(startInfo);
+            ResetNotificationObservations();
 
             SetStatus("업무포털 로그인 창을 열었습니다. 로그인 후 창 목록을 새로고침해 주세요.");
             await Task.Delay(1500);
@@ -1179,7 +1208,8 @@ public sealed partial class MainForm : Form
         {
             _pendingTaskKind = taskKind;
             _pendingTaskSystemName = exception.SystemName;
-            _confirmedExpiredSystems.Add(exception.SystemName);
+            if (_confirmedExpiredSystems.Add(exception.SystemName) && exception.SystemName == "K-에듀파인")
+                ResetNotificationObservations();
             ShowSourceWindowMaximized();
             SetStatus($"{exception.SystemName} 재로그인 필요 · {PortalTaskCatalog.GetName(taskKind)} 요청 대기 중");
             AppLogger.Info("Workflow", $"{taskKind}: 전체 브라우저 연결을 유지하고 {exception.SystemName} 재로그인 확인을 기다립니다.");
@@ -1269,7 +1299,8 @@ public sealed partial class MainForm : Form
                 }
                 else if (result.State == SessionSystemState.Expired)
                 {
-                    _confirmedExpiredSystems.Add(result.SystemName);
+                    if (_confirmedExpiredSystems.Add(result.SystemName) && result.SystemName == "K-에듀파인")
+                        ResetNotificationObservations();
                     if (result.SystemName == "K-에듀파인")
                         SetApprovalBadge(null, "K-에듀파인 재로그인 후 건수를 확인합니다.");
                 }
@@ -1590,11 +1621,13 @@ public sealed partial class MainForm : Form
         _refreshButton.Enabled = !operationRunning;
         _browserWindows.Enabled = !connected && !operationRunning;
         _settingsButton.Enabled = !operationRunning;
+        _notificationsButton.Enabled = !operationRunning;
         _closeButton.Enabled = !operationRunning;
         foreach (var taskButton in _taskButtons)
         {
             taskButton.Enabled = connected && _devToolsPort is not null && !operationRunning;
         }
+        RefreshNotificationSourceStatus();
     }
 
     private void SetConnectionStatus(string status)

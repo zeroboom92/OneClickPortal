@@ -26,6 +26,20 @@ internal static class AppPreferences
     private const string AlwaysOnTopValueName = "AlwaysOnTop";
     private const string DisplayModeValueName = "DisplayMode";
     private const string LastAcknowledgedUpdateVersionValueName = "LastAcknowledgedUpdateVersion";
+    private const string NotificationPopupsValueName = "NotificationPopups";
+
+    public static bool AreNotificationPopupsEnabled()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(SettingsKeyPath, writable: false);
+        return key?.GetValue(NotificationPopupsValueName) is not int value || value != 0;
+    }
+
+    public static void SetNotificationPopupsEnabled(bool enabled)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(SettingsKeyPath, writable: true)
+            ?? throw new InvalidOperationException("알림 설정을 저장하지 못했습니다.");
+        key.SetValue(NotificationPopupsValueName, enabled ? 1 : 0, RegistryValueKind.DWord);
+    }
 
     public static string? GetLastAcknowledgedUpdateVersion()
     {

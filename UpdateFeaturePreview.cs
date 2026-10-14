@@ -7,6 +7,8 @@ internal sealed class UpdateFeaturePreview : Control
 {
     private static readonly Color Ink = Color.FromArgb(34, 40, 50);
     private static readonly Color Muted = Color.FromArgb(92, 102, 116);
+    private static readonly Color Blue = Color.FromArgb(42, 106, 190);
+    private static readonly string IconFontFamily = GetIconFontFamily();
 
     public UpdateFeaturePreview()
     {
@@ -17,12 +19,10 @@ internal sealed class UpdateFeaturePreview : Control
         BackColor = Color.White;
         TabStop = false;
         AccessibleRole = AccessibleRole.Graphic;
-        AccessibleName = "메뉴 자동 펼침과 배경 투명도 안내";
-        AccessibleDescription = "열기 손잡이인 ▼ 업무포털은 항상 보입니다. "
-            + "마우스를 올리면 메뉴가 펼쳐지고, 메뉴와 손잡이를 벗어나면 2초 뒤 접힙니다. "
-            + "2초 안에 돌아오면 접힘이 취소됩니다. 로고와 손잡이를 끌어 좌우로 이동할 수 있습니다. "
-            + "설정에서 배경 불투명도를 0부터 100퍼센트까지 실시간으로 조절할 수 있으며, "
-            + "버튼과 글자는 선명하게 유지됩니다. 설정을 취소하면 원래 불투명도로 돌아갑니다.";
+        AccessibleName = "작은 알림창과 이전 업데이트 보기 안내";
+        AccessibleDescription = "설정 옆 종을 누르면 간단한 알림창이 열립니다. "
+            + "미확인 알림은 점으로 표시하며 확인한 기록도 보관합니다. 이전 업데이트 보기에서 과거 변경 내용을 확인합니다. "
+            + "알림 기능은 현재 테스트 중입니다. 현재는 화면의 결재대기 건수 증가를 알리며, 교외체험학습과 결석신고 알림은 아직 연결되지 않았습니다.";
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -45,86 +45,79 @@ internal sealed class UpdateFeaturePreview : Control
             graphics.FillPath(background, card);
             graphics.DrawPath(border, card);
         }
+        DrawText(graphics, "작은 종으로 간편하게 확인", R(20, 12, 310, 24), 14 * scale, Ink, bold: true);
+        DrawSurface(graphics, R(364, 14, 148, 23), Color.FromArgb(255, 242, 222),
+            Color.FromArgb(255, 242, 222), 6 * scale);
+        DrawText(graphics, "현재 테스트 중입니다", R(364, 14, 148, 23), 11 * scale,
+            Color.FromArgb(147, 91, 26), bold: true, alignment: TextFormatFlags.HorizontalCenter);
 
-        DrawText(graphics, "항상 보이는 손잡이에서 시작하세요", R(20, 12, 492, 22),
-            13 * scale, Ink, bold: true);
+        DrawSurface(graphics, R(20, 48, 492, 35), Color.White, Color.FromArgb(221, 228, 237), 6 * scale);
+        DrawTaskButton(graphics, R(27, 54, 30, 23), Color.FromArgb(229, 239, 255), "원", scale, Blue);
+        DrawTaskButton(graphics, R(62, 54, 78, 23), Color.FromArgb(241, 244, 248), "Edge ▾", scale);
+        DrawTaskButton(graphics, R(145, 54, 61, 23), Color.FromArgb(125, 169, 255), "나이스", scale);
+        DrawTaskButton(graphics, R(211, 54, 43, 23), Color.FromArgb(241, 244, 248), "복무", scale);
+        DrawTaskButton(graphics, R(259, 54, 43, 23), Color.FromArgb(241, 244, 248), "출장", scale);
+        DrawTaskButton(graphics, R(307, 54, 43, 23), Color.FromArgb(220, 206, 247), "결재", scale);
+        DrawTaskButton(graphics, R(355, 54, 43, 23), Color.FromArgb(249, 217, 189), "예산", scale);
+        DrawSurface(graphics, R(436, 52, 28, 27), Color.FromArgb(241, 244, 248), Color.FromArgb(220, 225, 232), 3 * scale);
+        DrawSurface(graphics, R(473, 52, 28, 27), Color.FromArgb(241, 244, 248), Color.FromArgb(220, 225, 232), 3 * scale);
+        DrawSystemIcon(graphics, "\uEA8F", R(436, 52, 28, 27), scale);
+        DrawSystemIcon(graphics, "\uE713", R(473, 52, 28, 27), scale);
+        using (var unread = new SolidBrush(Color.FromArgb(218, 64, 77)))
+            graphics.FillEllipse(unread, R(454, 54, 5, 5));
+        using (var connector = new Pen(Color.FromArgb(180, 203, 234), scale))
+            graphics.DrawLine(connector, 450 * scale, 83 * scale, 450 * scale, 94 * scale);
 
-        DrawTaskButton(graphics, R(24, 41, 123, 27), Color.White, "▼ 업무포털", scale,
-            Color.FromArgb(42, 106, 190));
-        DrawText(graphics, "→", R(155, 41, 26, 27), 17 * scale, Color.FromArgb(49, 124, 213),
-            alignment: TextFormatFlags.HorizontalCenter);
-        DrawText(graphics, "마우스를 올리면 메뉴가 펼쳐져요", R(186, 41, 326, 27),
-            12 * scale, Muted);
+        DrawText(graphics, "종을 누르면 알림", R(24, 108, 250, 23), 13 * scale, Ink, bold: true);
+        DrawText(graphics, "작은 창에서 바로 확인하세요.", R(24, 132, 250, 20), 12 * scale, Muted);
+        DrawText(graphics, "미확인 점·기록 보관", R(24, 164, 250, 23), 13 * scale, Ink, bold: true);
+        DrawText(graphics, "확인한 알림도 목록에 남습니다.", R(24, 188, 250, 20), 12 * scale, Muted);
+        DrawText(graphics, "이전 업데이트 보기", R(24, 220, 250, 23), 13 * scale, Ink, bold: true);
+        DrawText(graphics, "지나간 버전도 다시 확인하세요.", R(24, 244, 250, 20), 12 * scale, Muted);
 
-        using (var panel = new SolidBrush(Color.FromArgb(185, Color.White)))
-        using (var outline = new Pen(Color.FromArgb(225, 230, 238), scale))
-        using (var path = RoundedRectangle(R(20, 78, 492, 36), 7 * scale))
+        // A compact example uses approval-count alerts only; student monitoring is not connected.
+        DrawSurface(graphics, R(288, 94, 224, 163), Color.White, Color.FromArgb(218, 224, 233), 3 * scale);
+        DrawText(graphics, "알림", R(300, 102, 60, 24), 13 * scale, Ink, bold: true);
+        DrawText(graphics, "모두 확인", R(432, 106, 59, 18), 10 * scale, Muted);
+        DrawText(graphics, "×", R(490, 102, 18, 24), 14 * scale, Muted, alignment: TextFormatFlags.HorizontalCenter);
+        using (var divider = new Pen(Color.FromArgb(237, 240, 245), scale))
         {
-            // A subtle screen pattern remains visible through the mock background;
-            // the controls above it are painted with their original solid colors.
-            var state = graphics.Save();
-            graphics.SetClip(path);
-            using var backdrop = new SolidBrush(Color.FromArgb(220, 231, 243));
-            graphics.FillRectangle(backdrop, R(20, 78, 492, 36));
-            using var stripe = new SolidBrush(Color.FromArgb(204, 220, 237));
-            for (var x = 20; x < 512; x += 32)
-                graphics.FillRectangle(stripe, R(x, 78, 16, 36));
-            graphics.Restore(state);
-            graphics.FillPath(panel, path);
-            graphics.DrawPath(outline, path);
+            graphics.DrawLine(divider, 289 * scale, 132 * scale, 511 * scale, 132 * scale);
+            graphics.DrawLine(divider, 300 * scale, 193 * scale, 500 * scale, 193 * scale);
         }
-        DrawTaskButton(graphics, R(28, 84, 26, 24), Color.FromArgb(49, 124, 213), "원", scale, Color.White);
-        DrawTaskButton(graphics, R(60, 84, 62, 24), Color.FromArgb(248, 249, 251), "Edge ▾", scale);
-        DrawTaskButton(graphics, R(127, 84, 52, 24), Color.FromArgb(49, 124, 213), "로그인", scale, Color.White);
-        DrawTaskButton(graphics, R(184, 84, 56, 24), Color.FromArgb(125, 169, 255), "나이스", scale);
-        DrawTaskButton(graphics, R(245, 84, 47, 24), Color.FromArgb(241, 244, 248), "복무", scale);
-        DrawTaskButton(graphics, R(297, 84, 47, 24), Color.FromArgb(241, 244, 248), "출장", scale);
-        DrawTaskButton(graphics, R(349, 84, 47, 24), Color.FromArgb(220, 206, 247), "결재", scale);
-        DrawTaskButton(graphics, R(401, 84, 47, 24), Color.FromArgb(249, 217, 189), "예산", scale);
-        DrawTaskButton(graphics, R(453, 84, 29, 24), Color.FromArgb(241, 244, 248), "⚙", scale);
+        using (var unread = new SolidBrush(Blue)) graphics.FillEllipse(unread, R(300, 149, 5, 5));
+        DrawText(graphics, "결재대기 2건 증가", R(312, 141, 184, 23), 12 * scale, Ink, bold: true);
+        DrawText(graphics, "오늘 09:20", R(312, 166, 184, 18), 10 * scale, Muted);
+        DrawText(graphics, "결재대기 1건 증가", R(312, 201, 184, 23), 12 * scale, Ink);
+        DrawText(graphics, "오늘 09:05", R(312, 226, 184, 18), 10 * scale, Muted);
 
-        DrawFeature(graphics, 1, 128, "마우스로 열고, 벗어나면 2초 뒤 접기",
-            "메뉴나 손잡이로 돌아오면 접힘이 취소됩니다.",
-            Color.FromArgb(236, 229, 250), Color.FromArgb(107, 73, 161), scale);
-        DrawFeature(graphics, 2, 184, "배경만 0~100% 실시간으로 조절",
-            "버튼·글자는 선명하게, 취소하면 원래 불투명도로.",
-            Color.FromArgb(229, 239, 255), Color.FromArgb(49, 101, 169), scale);
-        DrawFeature(graphics, 3, 240, "로고·손잡이를 끌어 좌우로 이동",
-            "화면 위쪽을 유지하며 원하는 위치로 옮깁니다.",
-            Color.FromArgb(251, 234, 218), Color.FromArgb(148, 89, 43), scale);
-    }
-
-    private static void DrawFeature(Graphics graphics, int number, float y, string title, string description,
-        Color background, Color foreground, float scale)
-    {
-        Rectangle R(float x, float top, float width, float height) => new(
-            (int)Math.Round(x * scale), (int)Math.Round(top * scale),
-            (int)Math.Round(width * scale), (int)Math.Round(height * scale));
-        var marker = R(24, y + 2, 24, 24);
-        using var fill = new SolidBrush(background);
-        graphics.FillEllipse(fill, marker);
-        DrawText(graphics, number.ToString(), marker, 12 * scale, foreground, bold: true,
-            alignment: TextFormatFlags.HorizontalCenter);
-        DrawText(graphics, title, R(62, y, 446, 22), 13 * scale, Ink, bold: true);
-        DrawText(graphics, description, R(62, y + 24, 446, 22), 12 * scale, Muted);
+        DrawText(graphics, "교외체험학습·결석신고 알림은 아직 연결되지 않았습니다.",
+            R(20, 274, 492, 16), 10 * scale, Muted);
     }
 
     private static void DrawTaskButton(Graphics graphics, Rectangle bounds, Color color, string text, float scale,
         Color? textColor = null)
     {
-        var surface = new RectangleF(bounds.X + scale / 2, bounds.Y + scale / 2,
-            bounds.Width - scale, bounds.Height - scale);
-        using var path = RoundedRectangle(surface, 4 * scale);
-        using var fill = new LinearGradientBrush(surface, Blend(color, Color.White, 0.04f), color, 90f);
-        using var border = new Pen(Blend(color, Color.Black, 0.12f), scale);
-        using var highlight = new Pen(Color.FromArgb(210, Color.White), scale);
+        DrawSurface(graphics, bounds, color, Color.FromArgb(220, 225, 232), 3 * scale);
+        DrawText(graphics, text, bounds, 11 * scale, textColor ?? Color.FromArgb(45, 52, 64),
+            alignment: TextFormatFlags.HorizontalCenter);
+    }
+
+    private static void DrawSystemIcon(Graphics graphics, string glyph, Rectangle bounds, float scale)
+    {
+        using var font = new Font(IconFontFamily, 16 * scale, FontStyle.Regular, GraphicsUnit.Pixel);
+        TextRenderer.DrawText(graphics, glyph, font, bounds, Color.FromArgb(74, 84, 100),
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+    }
+
+    private static void DrawSurface(Graphics graphics, Rectangle bounds, Color background, Color borderColor, float radius)
+    {
+        using var path = RoundedRectangle(bounds, radius);
+        using var fill = new SolidBrush(background);
+        using var border = new Pen(borderColor);
         graphics.FillPath(fill, path);
         graphics.DrawPath(border, path);
-        graphics.DrawLine(highlight, bounds.Left + 4 * scale, bounds.Top + 1.5f * scale,
-            bounds.Right - 4 * scale, bounds.Top + 1.5f * scale);
-        // Pixel-sized fonts scale once with the drawing coordinates, including on high-DPI screens.
-        DrawText(graphics, text, bounds, 12 * scale, textColor ?? Color.FromArgb(45, 52, 64),
-            alignment: TextFormatFlags.HorizontalCenter);
     }
 
     private static void DrawText(Graphics graphics, string text, Rectangle bounds, float pixels, Color color,
@@ -132,13 +125,14 @@ internal sealed class UpdateFeaturePreview : Control
     {
         using var font = new Font("맑은 고딕", pixels, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel);
         TextRenderer.DrawText(graphics, text, font, bounds, color,
-            alignment | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            alignment | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
     }
 
-    private static Color Blend(Color first, Color second, float amount) => Color.FromArgb(
-        (int)Math.Round(first.R + (second.R - first.R) * amount),
-        (int)Math.Round(first.G + (second.G - first.G) * amount),
-        (int)Math.Round(first.B + (second.B - first.B) * amount));
+    private static string GetIconFontFamily()
+    {
+        using var font = new Font("Segoe Fluent Icons", 12F);
+        return font.Name == "Segoe Fluent Icons" ? font.Name : "Segoe MDL2 Assets";
+    }
 
     private static GraphicsPath RoundedRectangle(RectangleF bounds, float radius)
     {

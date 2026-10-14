@@ -24,6 +24,7 @@ public sealed partial class MainForm
         _approvalBadge.AccessibleDescription = description;
         _statusTip.SetToolTip(_approvalBadge, description + "\n클릭하면 결재대기 목록을 엽니다.");
         PositionApprovalBadge();
+        RefreshNotificationSourceStatus();
     }
 
     private void InitializeApprovalBadge()
@@ -157,6 +158,8 @@ public sealed partial class MainForm
                     ApprovalReadState.MultiplePages => "에듀파인 탭이 여러 개라 건수를 확인할 대상을 정할 수 없습니다.",
                     _ => "현재 에듀파인 화면에서 결재대기 건수를 확인할 수 없습니다. 요약이 보이는 화면에서 ↻를 눌러 주세요.",
                 });
+            if (result.State == ApprovalReadState.Available && count is int observedCount && result.SourceId is { } sourceId)
+                ObserveApprovalNotifications(observedCount, $"{office.Code}:{port}:{sourceId}");
         }
         catch (OperationCanceledException)
         {

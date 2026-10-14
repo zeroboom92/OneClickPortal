@@ -11,7 +11,8 @@ internal static class Program
     {
         // A preview skips installation integration but must not share a browser with old copies.
         var updatePreview = args.Contains("--update-preview", StringComparer.OrdinalIgnoreCase);
-        if (updatePreview || args.Contains("--dock-preview", StringComparer.OrdinalIgnoreCase))
+        var notificationPreview = args.Contains("--notification-preview", StringComparer.OrdinalIgnoreCase);
+        if (updatePreview || notificationPreview || args.Contains("--dock-preview", StringComparer.OrdinalIgnoreCase))
         {
             ApplicationConfiguration.Initialize();
             using var previewGuard = PreviewInstanceGuard.TryAcquire(out var reason);
@@ -25,6 +26,8 @@ internal static class Program
             using var preview = new MainForm(closeToTray: false) { Text = "원클릭 업무포털 · 테스트" };
             if (updatePreview)
                 preview.Shown += (_, _) => preview.ShowUpdateAnnouncement(force: true);
+            if (notificationPreview)
+                preview.Shown += (_, _) => preview.ShowNotificationCenter();
             Application.Run(preview);
             return;
         }

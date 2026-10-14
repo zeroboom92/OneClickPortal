@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace BrowserThumbnailPrototype;
 
 internal enum ApprovalReadState { Available, PageMissing, MultiplePages, CountUnavailable }
-internal sealed record ApprovalCountResult(int? Count, ApprovalReadState State);
+internal sealed record ApprovalCountResult(int? Count, ApprovalReadState State, string? SourceId = null);
 
 internal static class EdufineApprovalReader
 {
@@ -23,7 +23,7 @@ internal static class EdufineApprovalReader
         await session.ResumeBackgroundPageAsync(cancellationToken);
         var value = await session.EvaluateAsync(CountScript(fullScan), cancellationToken: cancellationToken);
         return value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var count) && count >= 0
-            ? new(count, ApprovalReadState.Available) : new(null, ApprovalReadState.CountUnavailable);
+            ? new(count, ApprovalReadState.Available, targets[0].Id) : new(null, ApprovalReadState.CountUnavailable);
     }
 
     internal static string CountScript(bool fullScan = true)

@@ -47,6 +47,14 @@ internal sealed class UpdateAnnouncementForm : Form
             ForeColor = Color.FromArgb(92, 102, 116),
         });
 
+        var historyButton = CreateButton("이전 업데이트 보기", new Point(24, 470), 170, primary: false);
+        historyButton.Click += (_, _) =>
+        {
+            using var history = new UpdateHistoryForm { TopMost = TopMost };
+            history.ShowDialog(this);
+        };
+        Controls.Add(historyButton);
+
         if (showSettingsButton)
         {
             var settingsButton = CreateButton("설정 열기", new Point(288, 470), 170, primary: true);
