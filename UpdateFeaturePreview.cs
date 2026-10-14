@@ -20,7 +20,7 @@ internal sealed class UpdateFeaturePreview : Control
         TabStop = false;
         AccessibleRole = AccessibleRole.Graphic;
         AccessibleName = "접혀도 남아 있는 업무포털 펼침 버튼 안내";
-        AccessibleDescription = "메뉴가 접히면 파란색 '▼ 업무포털 펼치기' 버튼이 남습니다. "
+        AccessibleDescription = "메뉴가 접히면 파란색 '▼ 업무포털' 버튼이 남습니다. "
             + "마우스를 올리거나 클릭하면 펼쳐지고, 상단의 '▲ 접기'를 누르면 메뉴만 접힙니다. "
             + "설정 옆 종에서 기존 알림을 확인하며, 프로그램 종료는 트레이 메뉴의 '완전히 종료'를 사용합니다. "
             + "알림 기능은 현재 테스트 중입니다. 현재는 화면의 결재대기 건수 증가를 알리며, 교외체험학습과 결석신고 알림은 아직 연결되지 않았습니다.";
@@ -59,9 +59,9 @@ internal sealed class UpdateFeaturePreview : Control
             graphics.DrawLine(screenEdge, 286 * scale, 89 * scale, 506 * scale, 89 * scale);
         }
 
-        // The blue handle matches the real 172 x 32 px control at 96 DPI.
-        DrawSurface(graphics, R(50, 89, 172, 32), Blue, Blue, 3 * scale);
-        DrawText(graphics, "▼ 업무포털 펼치기", R(50, 89, 172, 32), 12 * scale, Color.White,
+        // The blue handle matches the real 104 x 32 px control at 96 DPI.
+        DrawSurface(graphics, R(84, 89, 104, 32), Blue, Blue, 3 * scale);
+        DrawText(graphics, "▼ 업무포털", R(84, 89, 104, 32), 12 * scale, Color.White,
             bold: true, alignment: TextFormatFlags.HorizontalCenter);
         DrawText(graphics, "올리거나 클릭하여 펼치기", R(30, 139, 212, 24), 11 * scale, Muted,
             alignment: TextFormatFlags.HorizontalCenter);
@@ -76,8 +76,8 @@ internal sealed class UpdateFeaturePreview : Control
         using (var unread = new SolidBrush(Color.FromArgb(218, 64, 77)))
             graphics.FillEllipse(unread, R(390, 96, 4, 4));
         DrawTaskButton(graphics, R(432, 94, 68, 24), Color.FromArgb(229, 239, 255), "▲ 접기", scale, Blue);
-        DrawSurface(graphics, R(310, 122, 172, 32), Blue, Blue, 3 * scale);
-        DrawText(graphics, "▲ 접기", R(310, 122, 172, 32), 12 * scale, Color.White,
+        DrawSurface(graphics, R(344, 122, 104, 32), Blue, Blue, 3 * scale);
+        DrawText(graphics, "▲ 접기", R(344, 122, 104, 32), 12 * scale, Color.White,
             bold: true, alignment: TextFormatFlags.HorizontalCenter);
         DrawText(graphics, "상단 ▲ 접기로 메뉴만 접기", R(290, 160, 212, 22), 11 * scale, Muted,
             alignment: TextFormatFlags.HorizontalCenter);

@@ -31,7 +31,7 @@ internal sealed class TopDockController : IDisposable, IMessageFilter
     private long _lastTick;
     private long _autoCollapseAt;
     private const int AutoCollapseDelay = 2000;
-    private const string ExpandText = "▼ 업무포털 펼치기";
+    private const string ExpandText = "▼ 업무포털";
     private const string KeyPath = @"Software\OneClickPortal";
 
     public bool Enabled { get; private set; }
@@ -191,7 +191,9 @@ internal sealed class TopDockController : IDisposable, IMessageFilter
             _portal.Region = shape;
             old?.Dispose();
             var scale = _portal.DeviceDpi / 96f;
-            _handle.Size = new Size(Math.Min(bounds.Width, (int)Math.Round(172 * scale)),
+            // Apply the compact size after native creation, which can impose an initial tracking minimum.
+            _ = _handle.Handle;
+            _handle.Size = new Size(Math.Min(bounds.Width, (int)Math.Round(104 * scale)),
                 (int)Math.Round(32 * scale));
             var handleLeft = Math.Clamp(_anchor.X + (_portal.Width - _handle.Width) / 2,
                 bounds.Left, Math.Max(bounds.Left, bounds.Right - _handle.Width));
