@@ -12,7 +12,8 @@ internal static class Program
         // A preview skips installation integration but must not share a browser with old copies.
         var updatePreview = args.Contains("--update-preview", StringComparer.OrdinalIgnoreCase);
         var notificationPreview = args.Contains("--notification-preview", StringComparer.OrdinalIgnoreCase);
-        if (updatePreview || notificationPreview || args.Contains("--dock-preview", StringComparer.OrdinalIgnoreCase))
+        var studentNotificationPreview = args.Contains("--student-notification-preview", StringComparer.OrdinalIgnoreCase);
+        if (updatePreview || notificationPreview || studentNotificationPreview || args.Contains("--dock-preview", StringComparer.OrdinalIgnoreCase))
         {
             ApplicationConfiguration.Initialize();
             using var previewGuard = PreviewInstanceGuard.TryAcquire(out var reason);
@@ -23,10 +24,11 @@ internal static class Program
                     "기존 원클릭 종료 필요", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            using var preview = new MainForm(closeToTray: false) { Text = "원클릭 업무포털 · 테스트" };
+            using var preview = new MainForm(closeToTray: false, studentNotificationPreview: studentNotificationPreview)
+                { Text = studentNotificationPreview ? "원클릭 업무포털 · 모의 알림 테스트" : "원클릭 업무포털 · 테스트" };
             if (updatePreview)
-                preview.Shown += (_, _) => preview.ShowUpdateAnnouncement(force: true);
-            if (notificationPreview)
+                preview.Shown += (_, _) => preview.ShowUpdateAnnouncement(force: true, preview: true);
+            if (notificationPreview && !studentNotificationPreview)
                 preview.Shown += (_, _) => preview.ShowNotificationCenter();
             Application.Run(preview);
             return;

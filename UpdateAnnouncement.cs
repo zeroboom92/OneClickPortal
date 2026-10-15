@@ -9,35 +9,37 @@ internal static class UpdateAnnouncement
     public static string Summary => UpdateHistory.Current.Summary;
     public static string CurrentVersion => typeof(UpdateAnnouncement).Assembly
         .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+', 2)[0]
-        ?? typeof(UpdateAnnouncement).Assembly.GetName().Version?.ToString(3) ?? "1.3.2";
+        ?? typeof(UpdateAnnouncement).Assembly.GetName().Version?.ToString(3) ?? "1.4.0";
 
     public static bool ShouldShow(string? acknowledgedVersion) =>
         !string.Equals(acknowledgedVersion, CurrentVersion, StringComparison.Ordinal);
 
-    // Manual replays and previews do not consume the first-run announcement.
-    public static bool Show(Form owner, bool force = false, bool showSettingsButton = true)
+    // Manual replays can change the user's choice; previews never change saved preferences.
+    public static bool Show(Form owner, bool force = false, bool showSettingsButton = true, bool preview = false)
     {
         if (owner.IsDisposed || owner.Disposing) return false;
         try
         {
-            if (!force && !ShouldShow(AppPreferences.GetLastAcknowledgedUpdateVersion())) return false;
+            var alreadyHidden = !preview && !ShouldShow(AppPreferences.GetLastAcknowledgedUpdateVersion());
+            if (!force && !preview && alreadyHidden) return false;
             using var dialog = new UpdateAnnouncementForm(showSettingsButton)
             {
                 TopMost = owner.TopMost,
+                DoNotShowAgain = alreadyHidden,
             };
-            if (dialog.ShowDialog(owner) != DialogResult.OK) return false;
-            if (!force)
+            var result = dialog.ShowDialog(owner);
+            if (!preview && dialog.DoNotShowAgain != alreadyHidden)
             {
                 try
                 {
-                    AppPreferences.SetLastAcknowledgedUpdateVersion(CurrentVersion);
+                    AppPreferences.SetLastAcknowledgedUpdateVersion(dialog.DoNotShowAgain ? CurrentVersion : null);
                 }
                 catch (Exception exception)
                 {
-                    AppLogger.Error("Update", "업데이트 안내 확인 기록 저장 실패", exception);
+                    AppLogger.Error("Update", "업데이트 안내 표시 설정 저장 실패", exception);
                 }
             }
-            return dialog.OpenSettingsRequested;
+            return result == DialogResult.OK && dialog.OpenSettingsRequested;
         }
         catch (Exception exception)
         {

@@ -21,6 +21,9 @@ internal static class PortalTaskCatalog
 
     public static string GetName(PortalTaskKind kind)
     {
+        if (kind == PortalTaskKind.FieldTripReportManagement) return "교외체험학습보고서관리";
+        if (kind == PortalTaskKind.FieldTripApplicationManagement) return "교외체험학습신청서관리";
+        if (kind == PortalTaskKind.AbsenceReportManagement) return "결석신고서관리";
         return All.FirstOrDefault(task => task.Kind == kind)?.Name ?? kind.ToString();
     }
 

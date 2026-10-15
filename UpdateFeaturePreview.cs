@@ -19,10 +19,11 @@ internal sealed class UpdateFeaturePreview : Control
         BackColor = Color.White;
         TabStop = false;
         AccessibleRole = AccessibleRole.Graphic;
-        AccessibleName = "종 버튼으로 알림 확인";
-        AccessibleDescription = "설정 옆 종 버튼에 미확인 알림이 있으면 빨간 점이 표시됩니다. "
-            + "종을 누르면 알림 목록이 열리고, 확인한 기록도 보관됩니다. "
-            + "현재 결재대기 건수 증가 알림을 지원합니다.";
+        AccessibleName = "교외체험학습 보고서 미상신 알림";
+        AccessibleDescription = "아침에 연결하면 교외체험학습 미상신 보고서를 먼저 확인합니다. "
+            + "미확인 알림이 있으면 설정 옆 종 버튼에 빨간 점이 표시됩니다. "
+            + "종을 눌러 알림 목록을 열고 보고서 알림을 누르면 보고서관리로 이동해 조회합니다. "
+            + "이후 10분마다 확인하며, 같은 보고서는 중복으로 알리지 않습니다.";
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -45,46 +46,53 @@ internal sealed class UpdateFeaturePreview : Control
             graphics.FillPath(background, card);
             graphics.DrawPath(border, card);
         }
-        DrawText(graphics, "설정 옆 종 버튼", R(24, 48, 192, 24),
-            13 * scale, Ink, bold: true);
+        DrawText(graphics, "아침 연결 직후 먼저 확인", R(24, 18, 484, 28),
+            16 * scale, Ink, bold: true);
+        DrawText(graphics, "설정 옆 종 버튼", R(24, 68, 192, 22),
+            12 * scale, Muted);
 
         // A compact toolbar keeps the bell's location and unread dot easy to recognize.
-        DrawSurface(graphics, R(24, 82, 192, 56), Color.White, Color.FromArgb(221, 228, 237), 7 * scale);
-        DrawText(graphics, "업무포털", R(36, 96, 96, 28), 13 * scale, Ink, bold: true);
-        DrawSurface(graphics, R(144, 98, 26, 24), Color.FromArgb(229, 239, 255), Color.FromArgb(202, 220, 245), 4 * scale);
-        DrawSurface(graphics, R(178, 98, 26, 24), Color.FromArgb(241, 244, 248), Color.FromArgb(220, 225, 232), 4 * scale);
-        DrawSystemIcon(graphics, "\uEA8F", R(144, 98, 26, 24), scale);
-        DrawSystemIcon(graphics, "\uE713", R(178, 98, 26, 24), scale);
+        DrawSurface(graphics, R(24, 96, 192, 56), Color.White, Color.FromArgb(221, 228, 237), 7 * scale);
+        DrawText(graphics, "업무포털", R(36, 110, 96, 28), 13 * scale, Ink, bold: true);
+        DrawSurface(graphics, R(144, 112, 26, 24), Color.FromArgb(229, 239, 255), Color.FromArgb(202, 220, 245), 4 * scale);
+        DrawSurface(graphics, R(178, 112, 26, 24), Color.FromArgb(241, 244, 248), Color.FromArgb(220, 225, 232), 4 * scale);
+        DrawSystemIcon(graphics, "\uEA8F", R(144, 112, 26, 24), scale);
+        DrawSystemIcon(graphics, "\uE713", R(178, 112, 26, 24), scale);
         using (var unread = new SolidBrush(Color.FromArgb(218, 64, 77)))
-            graphics.FillEllipse(unread, R(162, 99, 5, 5));
+            graphics.FillEllipse(unread, R(162, 113, 5, 5));
+        DrawText(graphics, "빨간 점이 뜨면 알림 확인", R(24, 158, 192, 20),
+            11 * scale, Muted);
 
         using (var arrow = new Pen(Blue, 2 * scale))
         {
             arrow.StartCap = LineCap.Round;
             arrow.EndCap = LineCap.Round;
-            graphics.DrawLine(arrow, 226 * scale, 110 * scale, 244 * scale, 110 * scale);
-            graphics.DrawLine(arrow, 239 * scale, 105 * scale, 244 * scale, 110 * scale);
-            graphics.DrawLine(arrow, 239 * scale, 115 * scale, 244 * scale, 110 * scale);
+            graphics.DrawLine(arrow, 226 * scale, 124 * scale, 244 * scale, 124 * scale);
+            graphics.DrawLine(arrow, 239 * scale, 119 * scale, 244 * scale, 124 * scale);
+            graphics.DrawLine(arrow, 239 * scale, 129 * scale, 244 * scale, 124 * scale);
+            graphics.DrawLine(arrow, 382 * scale, 188 * scale, 382 * scale, 198 * scale);
+            graphics.DrawLine(arrow, 377 * scale, 193 * scale, 382 * scale, 198 * scale);
+            graphics.DrawLine(arrow, 387 * scale, 193 * scale, 382 * scale, 198 * scale);
         }
 
-        DrawSurface(graphics, R(256, 28, 252, 212), Color.White, Color.FromArgb(221, 228, 237), 8 * scale);
-        DrawText(graphics, "알림", R(272, 40, 104, 26), 14 * scale, Ink, bold: true);
-        DrawText(graphics, "모두 확인", R(390, 42, 102, 22), 11 * scale, Blue,
+        DrawSurface(graphics, R(256, 64, 252, 118), Color.White, Color.FromArgb(221, 228, 237), 8 * scale);
+        DrawText(graphics, "알림", R(272, 73, 104, 24), 14 * scale, Ink, bold: true);
+        DrawText(graphics, "모두 확인", R(390, 74, 102, 22), 11 * scale, Blue,
             alignment: TextFormatFlags.Right);
 
-        DrawSurface(graphics, R(268, 78, 228, 68), Color.FromArgb(237, 245, 255), Color.FromArgb(218, 232, 250), 5 * scale);
+        DrawSurface(graphics, R(268, 103, 228, 67), Color.FromArgb(237, 245, 255), Color.FromArgb(218, 232, 250), 5 * scale);
         using (var unread = new SolidBrush(Blue))
-            graphics.FillEllipse(unread, R(280, 96, 5, 5));
-        DrawText(graphics, "결재대기 2건 증가", R(292, 88, 192, 24), 13 * scale, Ink, bold: true);
-        DrawText(graphics, "방금 전", R(292, 116, 192, 18), 11 * scale, Muted);
+            graphics.FillEllipse(unread, R(280, 120, 5, 5));
+        DrawText(graphics, "교외체험학습 보고서", R(292, 109, 192, 24), 13 * scale, Ink, bold: true);
+        DrawText(graphics, "미상신 1건", R(292, 138, 192, 22), 12 * scale, Blue, bold: true);
 
-        DrawSurface(graphics, R(268, 154, 228, 68), Color.White, Color.FromArgb(232, 236, 242), 5 * scale);
-        DrawText(graphics, "결재대기 1건 증가", R(292, 164, 192, 24), 13 * scale, Ink);
-        DrawText(graphics, "확인함 · 오늘", R(292, 192, 192, 18), 11 * scale, Muted);
-        DrawText(graphics, "확인한 기록도 보관", R(256, 244, 252, 22), 11 * scale, Muted,
+        DrawSurface(graphics, R(24, 207, 484, 40), Color.FromArgb(237, 245, 255),
+            Color.FromArgb(202, 220, 245), 6 * scale);
+        DrawText(graphics, "알림을 누르면 보고서관리로 이동 · 조회", R(36, 213, 460, 28),
+            14 * scale, Blue, bold: true,
             alignment: TextFormatFlags.HorizontalCenter);
-        DrawText(graphics, "현재 결재대기 건수 증가 알림을 지원합니다.",
-            R(24, 275, 484, 16), 10 * scale, Muted,
+        DrawText(graphics, "이후 10분마다 확인 · 같은 보고서는 중복 알림 없음",
+            R(24, 265, 484, 18), 11 * scale, Muted,
             alignment: TextFormatFlags.HorizontalCenter);
     }
 

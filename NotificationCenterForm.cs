@@ -6,6 +6,7 @@ internal sealed class NotificationCenterForm : Form
     private static readonly Color Muted = Color.FromArgb(114, 123, 135);
     private readonly NotificationCenter _center;
     private readonly Func<NotificationKind, bool> _canOpen;
+    private readonly bool _isSimulation;
     private readonly ListBox _list = new();
     private readonly Label _emptyLabel = new();
     private readonly LinkLabel _markAllLink = new();
@@ -17,11 +18,12 @@ internal sealed class NotificationCenterForm : Form
 
     public event Action<NotificationKind>? OpenRequested;
 
-    public NotificationCenterForm(NotificationCenter center, Func<NotificationKind, bool>? canOpen = null)
+    public NotificationCenterForm(NotificationCenter center, Func<NotificationKind, bool>? canOpen = null, bool isSimulation = false)
     {
         _center = center ?? throw new ArgumentNullException(nameof(center));
         _canOpen = canOpen ?? (_ => false);
-        Text = "알림";
+        _isSimulation = isSimulation;
+        Text = isSimulation ? "모의 알림 테스트" : "알림";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
@@ -104,7 +106,7 @@ internal sealed class NotificationCenterForm : Form
         var header = new Panel { Dock = DockStyle.Fill, Size = new Size(334, 44), Margin = Padding.Empty };
         header.Controls.Add(new Label
         {
-            Text = "알림",
+            Text = _isSimulation ? "모의 알림" : "알림",
             Font = _titleFont,
             AutoSize = true,
             Location = new Point(14, 11),
@@ -176,7 +178,7 @@ internal sealed class NotificationCenterForm : Form
         layout.Controls.Add(body, 0, 1);
         layout.Controls.Add(new Label
         {
-            Text = "현재 테스트 중입니다",
+            Text = _isSimulation ? "모의 알림 · 클릭하면 실제 나이스 조회" : "현재 테스트 중입니다",
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
             Font = _timeFont,
@@ -273,6 +275,7 @@ internal sealed class NotificationCenterForm : Form
         NotificationKind.Approval => $"결재대기 {entry.ItemCount:N0}건 증가",
         NotificationKind.FieldTrip => $"교외체험학습 신청 {entry.ItemCount:N0}건",
         NotificationKind.Absence => $"결석신고서 제출 {entry.ItemCount:N0}건",
+        NotificationKind.FieldTripReport => $"교외체험학습 보고서 미상신 {entry.ItemCount:N0}건",
         _ => entry.Title.Replace('\r', ' ').Replace('\n', ' '),
     };
 

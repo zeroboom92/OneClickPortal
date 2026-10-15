@@ -12,6 +12,9 @@ internal enum PortalTaskKind
     PurchaseRequest,
     Approval,
     Budget,
+    FieldTripReportManagement,
+    FieldTripApplicationManagement,
+    AbsenceReportManagement,
 }
 
 internal sealed record WorkflowResult(
@@ -96,6 +99,9 @@ internal sealed partial class PortalWorkflowController
                 PortalTaskKind.PurchaseRequest => OpenPurchaseRequestAsync(cancellationToken),
                 PortalTaskKind.Approval => OpenEdufineOverviewAsync(approval: true, cancellationToken),
                 PortalTaskKind.Budget => OpenEdufineOverviewAsync(approval: false, cancellationToken),
+                PortalTaskKind.FieldTripReportManagement => OpenFieldTripReportManagementAsync(cancellationToken),
+                PortalTaskKind.FieldTripApplicationManagement or PortalTaskKind.AbsenceReportManagement =>
+                    OpenStudentManagementAsync(taskKind, cancellationToken),
                 _ => throw new ArgumentOutOfRangeException(nameof(taskKind)),
             });
             AppLogger.Info("Workflow", $"{taskKind} 완료");
@@ -108,7 +114,8 @@ internal sealed partial class PortalWorkflowController
         }
     }
 
-    public async Task PrepareApplicationTargetsAsync(CancellationToken cancellationToken = default)
+    public async Task PrepareApplicationTargetsAsync(CancellationToken cancellationToken = default,
+        Func<CancellationToken, Task>? afterNiceReady = null)
     {
         AppLogger.Info("Connection", "업무 시스템 준비 시작");
         await TryCloseVisiblePortalNoticeAsync(cancellationToken);
@@ -129,6 +136,10 @@ internal sealed partial class PortalWorkflowController
             await TryCloseVisibleNiceNoticeDialogAsync(niceSession, cancellationToken);
         }
         AppLogger.Info("Connection", "나이스 준비 완료");
+
+        // The first report check belongs before Edufine preparation and all automatic
+        // monitors. Existing callers can omit the optional connection-priority hook.
+        if (afterNiceReady is not null) await afterNiceReady(cancellationToken);
 
         _reportProgress("K-에듀파인을 미리 여는 중");
         var edufineTarget = await EnsureApplicationTargetAsync(

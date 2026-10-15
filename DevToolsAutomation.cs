@@ -107,7 +107,8 @@ internal sealed class DevToolsSession : IAsyncDisposable
     public static async Task<string> CreateTargetAsync(
         int port,
         Uri uri,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool newWindow = false)
     {
         var session = new DevToolsSession();
         using var connectCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -118,7 +119,7 @@ internal sealed class DevToolsSession : IAsyncDisposable
             await session._socket.ConnectAsync(browserUri, connectCancellation.Token);
             var result = await session.ExecuteRootCommandAsync(
                 "Target.createTarget",
-                new { url = uri.AbsoluteUri },
+                new { url = uri.AbsoluteUri, newWindow },
                 connectCancellation.Token);
             var targetId = result.GetProperty("targetId").GetString()
                 ?? throw new InvalidOperationException("새 브라우저 탭을 만들지 못했습니다.");

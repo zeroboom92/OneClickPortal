@@ -3,7 +3,13 @@ namespace BrowserThumbnailPrototype;
 internal sealed class UpdateAnnouncementForm : Form
 {
     private readonly UpdateFeaturePreview _featurePreview = new();
+    private readonly CheckBox _doNotShowAgainCheckBox = new();
     public bool OpenSettingsRequested { get; private set; }
+    public bool DoNotShowAgain
+    {
+        get => _doNotShowAgainCheckBox.Checked;
+        set => _doNotShowAgainCheckBox.Checked = value;
+    }
 
     public UpdateAnnouncementForm(bool showSettingsButton = true)
     {
@@ -13,7 +19,9 @@ internal sealed class UpdateAnnouncementForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(580, 520);
+        ClientSize = new Size(580, 550);
+        AutoScroll = true;
+        AutoScrollMinSize = ClientSize;
         BackColor = Color.White;
         ForeColor = Color.FromArgb(34, 40, 50);
         Font = new Font("맑은 고딕", 9F);
@@ -47,7 +55,13 @@ internal sealed class UpdateAnnouncementForm : Form
             ForeColor = Color.FromArgb(92, 102, 116),
         });
 
-        var historyButton = CreateButton("이전 업데이트 보기", new Point(24, 470), 170, primary: false);
+        _doNotShowAgainCheckBox.Text = "이 버전 안내 다시 보지 않기";
+        _doNotShowAgainCheckBox.Location = new Point(24, 458);
+        _doNotShowAgainCheckBox.AutoSize = true;
+        _doNotShowAgainCheckBox.AccessibleDescription = "선택하면 이 버전 안내를 자동으로 다시 표시하지 않습니다. 새 버전의 안내는 표시됩니다.";
+        Controls.Add(_doNotShowAgainCheckBox);
+
+        var historyButton = CreateButton("이전 업데이트 보기", new Point(24, 500), 170, primary: false);
         historyButton.Click += (_, _) =>
         {
             using var history = new UpdateHistoryForm { TopMost = TopMost };
@@ -57,7 +71,7 @@ internal sealed class UpdateAnnouncementForm : Form
 
         if (showSettingsButton)
         {
-            var settingsButton = CreateButton("설정 열기", new Point(288, 470), 170, primary: true);
+            var settingsButton = CreateButton("설정 열기", new Point(288, 500), 170, primary: true);
             settingsButton.Click += (_, _) =>
             {
                 OpenSettingsRequested = true;
@@ -65,7 +79,7 @@ internal sealed class UpdateAnnouncementForm : Form
             };
             Controls.Add(settingsButton);
         }
-        var confirmButton = CreateButton("확인", new Point(470, 470), 86, primary: !showSettingsButton);
+        var confirmButton = CreateButton("확인", new Point(470, 500), 86, primary: !showSettingsButton);
         confirmButton.DialogResult = DialogResult.OK;
         Controls.Add(confirmButton);
         AcceptButton = confirmButton;

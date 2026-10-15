@@ -10,6 +10,7 @@ internal enum NotificationKind
     Approval,
     FieldTrip,
     Absence,
+    FieldTripReport,
 }
 
 // Id must be stable for the source system. Never pass student names, document bodies,
@@ -30,20 +31,23 @@ internal sealed record PortalNotification(
 
 /// <summary>
 /// Stores generic notification summaries, never source IDs, scopes, names or document text.
-/// Observation baselines exist only in memory: the first valid snapshot after starting or
-/// explicitly resetting establishes a baseline, including an empty snapshot.
+/// Count and new-submission baselines exist only in memory. Pending field-trip reports
+/// notify on their first observation and retain only hashed deduplication keys on disk.
 /// Callers must reject failed, incomplete or unauthenticated snapshots before observing them.
 /// </summary>
 internal sealed class NotificationCenter
 {
     internal const int MaximumEntries = 300;
     internal const int MaximumRememberedItems = 1000;
-    private const int MaximumStoreBytes = 1024 * 1024;
+    private const int MaximumStoreBytes = 16 * 1024 * 1024;
     private readonly object syncRoot = new();
     private readonly string storagePath;
     private readonly List<PortalNotification> entries = [];
     private readonly Dictionary<ObservationKey, int> countBaselines = [];
     private readonly Dictionary<ObservationKey, ItemObservation> itemBaselines = [];
+    // Keep these independently of the 300 visible entries and all in-memory baselines.
+    // Raw report IDs and the stable office/account/class scope never leave the caller.
+    private readonly HashSet<string> notifiedFieldTripReports = new(StringComparer.Ordinal);
     private bool initialReadFailed;
     private bool hasPersistenceError;
 
@@ -142,6 +146,64 @@ internal sealed class NotificationCenter
         return added.AsReadOnly();
     }
 
+    /// <summary>
+    /// Observe a complete, successfully queried list of unsubmitted reports. Unlike new
+    /// submissions, existing pending reports must notify on the first successful query.
+    /// Scope must identify the office/account/class and must not contain a tab ID or port.
+    /// The caller must reject failed, partial, loading and unauthenticated snapshots.
+    /// </summary>
+    public IReadOnlyList<PortalNotification> ObservePendingFieldTripReports(
+        IReadOnlyList<NotificationSourceItem>? items, string scope, DateTimeOffset? now = null)
+    {
+        if (!IsValid(NotificationKind.FieldTripReport, scope) || items is null)
+            return Array.Empty<PortalNotification>();
+        var current = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in items)
+        {
+            // Validate the entire snapshot before remembering any report. Ignore Summary
+            // so source content can never reach the popup, notification history or disk.
+            if (item is null || string.IsNullOrWhiteSpace(item.Id) || item.Id.Length > 2048)
+                return Array.Empty<PortalNotification>();
+            current.Add(Fingerprint(NotificationKind.FieldTripReport, scope, item.Id));
+        }
+
+        List<PortalNotification> added = [];
+        bool persistenceChanged;
+        lock (syncRoot)
+        {
+            // An unreadable existing store may contain the very same report keys. Keep
+            // that file intact and defer these alerts until a restart can read it safely.
+            if (initialReadFailed) return Array.Empty<PortalNotification>();
+            var previousPersistenceError = hasPersistenceError;
+            var previousEntries = entries.ToArray();
+            List<string> newReportKeys = [];
+            var timestamp = now ?? DateTimeOffset.Now;
+            foreach (var sourceKey in current)
+                if (notifiedFieldTripReports.Add(sourceKey))
+                {
+                    newReportKeys.Add(sourceKey);
+                    added.Add(Create(NotificationKind.FieldTripReport, 1, timestamp, sourceKey));
+                }
+            if (added.Count > 0)
+            {
+                AddAndSave(added);
+                if (hasPersistenceError)
+                {
+                    // Publish pending-report alerts only after their deduplication keys are
+                    // durable. Otherwise a restart after a failed write would alert twice.
+                    entries.Clear();
+                    entries.AddRange(previousEntries);
+                    foreach (var sourceKey in newReportKeys) notifiedFieldTripReports.Remove(sourceKey);
+                    added.Clear();
+                }
+            }
+            else if (hasPersistenceError) Save(); // Retry a transient write failure without repeating a popup.
+            persistenceChanged = previousPersistenceError != hasPersistenceError;
+        }
+        if (added.Count > 0 || persistenceChanged) Changed?.Invoke(this, EventArgs.Empty);
+        return added.AsReadOnly();
+    }
+
     public void MarkRead(string id)
     {
         bool changed;
@@ -211,6 +273,7 @@ internal sealed class NotificationCenter
             NotificationKind.Approval => ("결재대기 증가", $"화면의 결재대기 건수가 {count}건 늘었습니다. 결재대기 목록에서 확인해 주세요."),
             NotificationKind.FieldTrip => ("교외체험학습 신청", $"새 교외체험학습 신청서가 {count}건 제출되었습니다."),
             NotificationKind.Absence => ("결석신고서 제출", $"새 결석신고서가 {count}건 제출되었습니다."),
+            NotificationKind.FieldTripReport => ("교외체험학습 보고서 미상신", $"미상신 교외체험학습 보고서가 {count}건 있습니다. 보고서관리에서 확인해 주세요."),
             _ => throw new ArgumentOutOfRangeException(nameof(kind)),
         };
         return new PortalNotification(id ?? Guid.NewGuid().ToString("N"), kind, title, message, now, isRead, sourceKey)
@@ -243,13 +306,22 @@ internal sealed class NotificationCenter
                     || !Enum.IsDefined(entry.Kind) || entry.ItemCount < 1
                     || entry.CreatedAt == default) throw new JsonException();
             }
+            var reportKeys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var fingerprint in store.NotifiedFieldTripReportFingerprints ?? [])
+            {
+                if (fingerprint is null || fingerprint.Length != 64
+                    || fingerprint.Any(character => !(character is >= '0' and <= '9' or >= 'A' and <= 'F'))
+                    || !reportKeys.Add(fingerprint)) throw new JsonException();
+            }
             entries.AddRange(store.Entries.OrderByDescending(entry => entry.CreatedAt)
                 .Select(entry => Create(entry.Kind, entry.ItemCount, entry.CreatedAt,
                     id: entry.Id, isRead: entry.IsRead)));
+            notifiedFieldTripReports.UnionWith(reportKeys);
         }
         catch (JsonException)
         {
             entries.Clear();
+            notifiedFieldTripReports.Clear();
             AppLogger.Info("Notifications", "알림 기록 형식을 확인할 수 없어 빈 기록으로 복구합니다.");
             Save();
         }
@@ -275,11 +347,14 @@ internal sealed class NotificationCenter
             Directory.CreateDirectory(directory);
             temporaryPath = Path.Combine(directory, $".notifications-{Guid.NewGuid():N}.tmp");
             var store = new NotificationStore(1, entries.Select(entry => new StoredNotification(
-                entry.Id, entry.Kind, entry.CreatedAt, entry.IsRead, entry.ItemCount)).ToList());
+                entry.Id, entry.Kind, entry.CreatedAt, entry.IsRead, entry.ItemCount)).ToList(),
+                notifiedFieldTripReports.Count == 0 ? null : notifiedFieldTripReports.Order(StringComparer.Ordinal).ToList());
             using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write,
                 FileShare.None, 4096, FileOptions.WriteThrough))
             {
                 JsonSerializer.Serialize(stream, store);
+                // Never replace a valid store with a file the next startup would reject.
+                if (stream.Length > MaximumStoreBytes) throw new IOException("알림 기록 저장 한도를 초과했습니다.");
                 stream.Flush(flushToDisk: true);
             }
             if (File.Exists(storagePath)) File.Replace(temporaryPath, storagePath, null);
@@ -306,7 +381,9 @@ internal sealed class NotificationCenter
         IOException or UnauthorizedAccessException or System.Security.SecurityException or NotSupportedException;
 
     private readonly record struct ObservationKey(NotificationKind Kind, string Scope);
-    private sealed record NotificationStore(int Version, List<StoredNotification> Entries);
+    private sealed record NotificationStore(int Version, List<StoredNotification> Entries,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        List<string>? NotifiedFieldTripReportFingerprints = null);
     private sealed record StoredNotification(
         string Id, NotificationKind Kind, DateTimeOffset CreatedAt, bool IsRead, int ItemCount);
 

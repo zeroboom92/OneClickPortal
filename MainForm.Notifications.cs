@@ -33,7 +33,9 @@ public sealed partial class MainForm
         var unread = _notificationCenter.UnreadCount;
         _notificationsButton.HasUnread = unread > 0;
         _notificationsButton.AccessibleName = $"알림 · 미확인 {unread:N0}건";
-        _notificationsButton.AccessibleDescription = "결재대기 건수 증가 알림을 모아 확인합니다.";
+        _notificationsButton.AccessibleDescription = _studentNotificationPreview
+            ? "모의 신청서·결석신고서·보고서 알림을 누르면 실제 나이스 메뉴를 조회합니다."
+            : "결재대기 건수 증가와 교외체험학습 보고서 미상신 알림을 모아 확인합니다.";
         _notificationMenuItem.Text = unread == 0 ? "알림" : $"알림 · 미확인 {unread:N0}건";
         _trayIcon.Text = unread == 0 ? "원클릭 업무포털 · 클릭하여 열기" : $"원클릭 업무포털 · 미확인 알림 {unread:N0}건";
         RefreshNotificationSourceStatus();
@@ -41,6 +43,7 @@ public sealed partial class MainForm
 
     private void ObserveApprovalNotifications(int count, string scope)
     {
+        if (_studentNotificationPreview) return;
         // Reuse the existing successful read; notification monitoring adds no browser requests.
         var added = _notificationCenter.ObserveCount(NotificationKind.Approval, count, scope);
         ShowNewNotificationPopup(added);
@@ -51,6 +54,7 @@ public sealed partial class MainForm
         // An explicit login/reconnect or confirmed expiry may mean a different account,
         // even if Chromium reuses the same tab ID. Ordinary read failures keep the baseline.
         _approvalBadgeCancellationSource?.Cancel();
+        _fieldTripReportCancellationSource?.Cancel();
         _notificationCenter.ResetObservations();
     }
 
@@ -72,8 +76,13 @@ public sealed partial class MainForm
     }
 
     private bool CanOpenNotificationSource(NotificationKind kind) =>
-        kind == NotificationKind.Approval && IsBrowserConnected() && !_workflowRunning
-            && !_confirmedExpiredSystems.Contains("K-에듀파인");
+        IsBrowserConnected() && !_workflowRunning && (kind switch
+        {
+            NotificationKind.Approval => !_confirmedExpiredSystems.Contains("K-에듀파인"),
+            NotificationKind.FieldTrip or NotificationKind.Absence or NotificationKind.FieldTripReport
+                => !_confirmedExpiredSystems.Contains("나이스"),
+            _ => false,
+        });
 
     internal void ShowNotificationCenter() => OpenNotificationCenter();
 
@@ -96,9 +105,9 @@ public sealed partial class MainForm
             return;
         }
 
-        var dialog = new NotificationCenterForm(_notificationCenter, CanOpenNotificationSource)
+        var dialog = new NotificationCenterForm(_notificationCenter, CanOpenNotificationSource, _studentNotificationPreview)
         {
-            TopMost = TopMost,
+            TopMost = _studentNotificationPreview || TopMost,
             StartPosition = FormStartPosition.Manual,
         };
         var autoHidePause = _topDock?.SuspendAutoHide();
@@ -108,9 +117,14 @@ public sealed partial class MainForm
             if (!CanOpenNotificationSource(kind)) return;
             dialog.Close();
             if (kind == NotificationKind.Approval) _ = RunWorkflowAsync(PortalTaskKind.Approval);
+            else if (kind == NotificationKind.FieldTrip) _ = RunWorkflowAsync(PortalTaskKind.FieldTripApplicationManagement);
+            else if (kind == NotificationKind.Absence) _ = RunWorkflowAsync(PortalTaskKind.AbsenceReportManagement);
+            else if (kind == NotificationKind.FieldTripReport) _ = RunWorkflowAsync(PortalTaskKind.FieldTripReportManagement);
         };
         dialog.Deactivate += (_, _) =>
         {
+            // Keep the explicit simulation visible until an entry or close is clicked.
+            if (_studentNotificationPreview) return;
             if ((Control.MouseButtons & MouseButtons.Left) != 0
                 && _notificationsButton.RectangleToScreen(_notificationsButton.ClientRectangle).Contains(Cursor.Position))
                 _notificationBellDismissedAt = Environment.TickCount64;
@@ -127,6 +141,12 @@ public sealed partial class MainForm
             PositionNotificationCenter();
             dialog.Show(this);
             PositionNotificationCenter();
+            if (_studentNotificationPreview)
+            {
+                dialog.BringToFront();
+                dialog.Activate();
+                NativeMethods.SetForegroundWindow(dialog.Handle);
+            }
         }
         catch
         {
@@ -152,6 +172,7 @@ public sealed partial class MainForm
 
     private void RefreshNotificationSourceStatus() => _statusTip.SetToolTip(_notificationsButton,
         $"알림 · 미확인 {_notificationCenter.UnreadCount:N0}건"
+        + "\n" + _fieldTripReportStatus
         + (_notificationCenter.HasPersistenceError ? "\n알림 기록을 저장하지 못했습니다." : string.Empty));
 
     private void CloseNotificationCenter() => _notificationDialog?.Close();

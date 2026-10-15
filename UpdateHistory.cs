@@ -16,6 +16,18 @@ internal static class UpdateHistory
     // 1.0.1은 로컬 수정·미배포로 기록되어 있어 포함하지 않습니다.
     public static IReadOnlyList<UpdateRelease> Releases { get; } = Array.AsReadOnly(new UpdateRelease[]
     {
+        // v1.4.0: pending-report notifications prepared for user review.
+        new("1.4.0", new DateOnly(2026, 10, 15),
+            "미상신 보고서를 알려드려요",
+            "연결하면 교외체험학습 미상신 보고서를 먼저 확인합니다.\n알림을 누르면 보고서관리로 이동해 조회합니다.",
+            ReadOnlyChanges(
+                "연결 직후 교외체험학습보고서관리 화면을 열어 기존 미상신 보고서도 먼저 확인합니다.",
+                "이후 10분마다 현재 조회 조건으로 확인하고, 같은 보고서는 재조회·재실행 후에도 중복으로 알리지 않습니다.",
+                "보고서 알림을 누르면 나이스의 보고서관리로 이동해 조회합니다.",
+                "실행 중인 전용 Edge를 재사용해 로그인 창을 열고, 설정 파일 잠금으로 로그인이 막히던 문제를 개선했습니다.",
+                "업데이트 안내에서 이 버전 안내 다시 보지 않기를 선택할 수 있습니다.",
+                "신청서·결석신고서의 새 제출 자동 알림은 아직 연결 전이며, 모의 알림으로 메뉴 이동과 조회를 시험할 수 있습니다.",
+                "로그인·인증서 선택과 최종 상신·결재는 사용자가 직접 진행합니다.")),
         // v1.3.2: notification-button announcement prepared for user review.
         new("1.3.2", new DateOnly(2026, 10, 14),
             "종 버튼으로 알림을 확인하세요",

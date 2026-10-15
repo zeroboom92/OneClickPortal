@@ -67,15 +67,15 @@ public sealed partial class MainForm : Form
     private bool _sessionNoticeIsSessionStatus;
     private string? _sleepGuardFailureMessage;
 
-    public MainForm(bool closeToTray = true) : this(closeToTray, new NotificationCenter(
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "OneClickPortal", closeToTray ? "notifications.json" : "notifications-preview.json")))
+    public MainForm(bool closeToTray = true, bool studentNotificationPreview = false)
+        : this(closeToTray, CreateNotificationCenter(closeToTray, studentNotificationPreview), studentNotificationPreview)
     {
     }
 
-    internal MainForm(bool closeToTray, NotificationCenter notificationCenter)
+    internal MainForm(bool closeToTray, NotificationCenter notificationCenter, bool studentNotificationPreview = false)
     {
         _closeToTray = closeToTray;
+        _studentNotificationPreview = studentNotificationPreview;
         _notificationCenter = notificationCenter;
         Text = "원클릭 업무포털";
         StartPosition = FormStartPosition.Manual;
@@ -155,6 +155,7 @@ public sealed partial class MainForm : Form
             _healthTimer.Stop();
             _portalSessionTimer.Stop();
             StopApprovalMonitoring();
+            StopFieldTripReportMonitoring();
             _workflowCancellationSource?.Cancel();
             _sessionCheckCancellationSource?.Cancel();
             _systemSleepGuard.Dispose();
@@ -163,8 +164,10 @@ public sealed partial class MainForm : Form
         _healthTimer.Start();
         _portalSessionTimer.Tick += async (_, _) => await CheckPortalSessionsInBackgroundAsync();
         _approvalBadgeTimer.Tick += async (_, _) => await RefreshScheduledApprovalBadgeAsync();
+        _fieldTripReportTimer.Tick += async (_, _) => await RefreshScheduledFieldTripReportsAsync();
         SystemEvents.SessionSwitch += OnWindowsSessionSwitch;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        if (_studentNotificationPreview) InitializeStudentNotificationPreview();
     }
 
     private void InitializeTray()
@@ -220,6 +223,7 @@ public sealed partial class MainForm : Form
         {
             DisposeNotifications();
             StopApprovalMonitoring();
+            StopFieldTripReportMonitoring();
             _topDock?.Dispose();
             _background?.Dispose();
             _statusTip.Dispose();
@@ -230,6 +234,7 @@ public sealed partial class MainForm : Form
             _healthTimer.Dispose();
             _portalSessionTimer.Dispose();
             _approvalBadgeTimer.Dispose();
+            _fieldTripReportTimer.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -309,10 +314,11 @@ public sealed partial class MainForm : Form
         connectionControls.Controls.Add(_browserWindows, 0, 0);
 
         StyleButton(_refreshButton, "↻", 28, Color.FromArgb(241, 244, 248), Color.FromArgb(74, 84, 100));
-        _refreshButton.AccessibleName = "브라우저 창 목록 및 결재 건수 다시 확인";
+        _refreshButton.AccessibleName = "브라우저 창 목록, 결재 건수 및 교외체험학습 보고서 다시 확인";
         _refreshButton.Click += async (_, _) =>
         {
             RefreshBrowserWindows();
+            await RefreshFieldTripReportsAsync();
             await RefreshApprovalBadgeAsync();
         };
         connectionControls.Controls.Add(_refreshButton, 1, 0);
@@ -373,7 +379,7 @@ public sealed partial class MainForm : Form
             else Close();
         };
         _rootLayout.Controls.Add(_closeButton, 9, 0);
-        _statusTip.SetToolTip(_refreshButton, "브라우저 창 목록 및 결재 건수 다시 확인");
+        _statusTip.SetToolTip(_refreshButton, "브라우저 창 목록, 결재 건수 및 교외체험학습 보고서 다시 확인");
         _statusTip.SetToolTip(_settingsButton, "설정");
         _statusTip.SetToolTip(_closeButton, _closeToTray ? "트레이로 숨기기" : "테스트본 종료");
         EnableDragging(_rootLayout);
@@ -656,9 +662,9 @@ public sealed partial class MainForm : Form
         }
     }
 
-    internal void ShowUpdateAnnouncement(bool force = false)
+    internal void ShowUpdateAnnouncement(bool force = false, bool preview = false)
     {
-        if (UpdateAnnouncement.Show(this, force))
+        if (UpdateAnnouncement.Show(this, force, preview: preview))
             OpenSettings();
     }
 
@@ -752,6 +758,7 @@ public sealed partial class MainForm : Form
             _sessionCheckCancellationSource?.Cancel();
         }
         UpdateApprovalMonitoring();
+        UpdateFieldTripReportMonitoring();
     }
 
     private void PositionAtBottomRight()
@@ -948,7 +955,9 @@ public sealed partial class MainForm : Form
                         AppLogger.Info("Progress", message);
                         SetConnectionStatus(message);
                     });
-                await controller.PrepareApplicationTargetsAsync(_workflowCancellationSource.Token);
+                await controller.PrepareApplicationTargetsAsync(_workflowCancellationSource.Token,
+                    afterNiceReady: token => CheckFieldTripReportsOnConnectAsync(
+                        controller, _devToolsPort.Value, educationOffice, token));
                 UpdateAutoRefreshTimer();
                 AppLogger.Info(
                     "Connection",
@@ -972,6 +981,7 @@ public sealed partial class MainForm : Form
             _pendingTaskSystemName = keepPendingTaskAfterFailure ? exception.SystemName : null;
             if (_confirmedExpiredSystems.Add(exception.SystemName) && exception.SystemName == "K-에듀파인")
                 ResetNotificationObservations();
+            if (exception.SystemName == "나이스") CancelFieldTripReportReadForExpiredSession();
             AppLogger.Error("Connection", $"{exception.SystemName} 세션 종료 상태지만 브라우저 연결과 다른 시스템 감시는 유지합니다.", exception);
             if (_sourceWindow != IntPtr.Zero && NativeMethods.IsWindow(_sourceWindow))
             {
@@ -1030,6 +1040,17 @@ public sealed partial class MainForm : Form
         using var autoHidePause = _topDock?.SuspendAutoHide();
         try
         {
+            var educationOffice = EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode());
+            if (await ControlledEdgeLauncher.TryReuseAsync(educationOffice))
+            {
+                ResetNotificationObservations();
+                SetStatus("업무포털 로그인 창을 열었습니다. 로그인 후 연결을 눌러 주세요.");
+                await Task.Delay(500);
+                RefreshBrowserWindows();
+                SelectLaunchedPortalEdge();
+                return;
+            }
+
             var edgePath = FindEdgeExecutable();
             if (edgePath is null)
             {
@@ -1052,8 +1073,17 @@ public sealed partial class MainForm : Form
             startInfo.ArgumentList.Add("--disable-background-timer-throttling");
             startInfo.ArgumentList.Add("--disable-renderer-backgrounding");
             startInfo.ArgumentList.Add("--disable-backgrounding-occluded-windows");
-            var educationOffice = EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode());
-            EdgeIntegrationPolicy.PrepareControlledProfile(educationOffice);
+            if (!EdgeIntegrationPolicy.PrepareControlledProfile(educationOffice))
+            {
+                SetStatus("로그인 창의 권한 설정을 준비하지 못했습니다. 원클릭에서 연 Edge를 닫은 뒤 다시 시도해 주세요.");
+                MessageBox.Show(this,
+                    "인증서 로그인에 필요한 브라우저 권한을 설정하지 못했습니다.\n\n"
+                    + "원클릭의 '로그인'으로 연 Edge 창을 모두 닫은 뒤 다시 '로그인'을 눌러 주세요.\n\n"
+                    + "현재 창에서 진행하려면 주소창 왼쪽 사이트 정보 → 이 사이트에 대한 사용 권한에서 "
+                    + "로컬 네트워크 접근을 허용한 뒤 새로고침해 주세요.",
+                    "로그인 권한 설정 안내", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
             startInfo.ArgumentList.Add(educationOffice.PortalUri.AbsoluteUri);
             Process.Start(startInfo);
             ResetNotificationObservations();
@@ -1061,11 +1091,22 @@ public sealed partial class MainForm : Form
             SetStatus("업무포털 로그인 창을 열었습니다. 로그인 후 창 목록을 새로고침해 주세요.");
             await Task.Delay(1500);
             RefreshBrowserWindows();
+            SelectLaunchedPortalEdge();
         }
         catch (Exception exception)
         {
             MessageBox.Show(this, exception.Message, "Edge 실행 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    private void SelectLaunchedPortalEdge()
+    {
+        if (_sourceWindow != IntPtr.Zero) return;
+        var candidates = _browserWindows.Items.Cast<BrowserWindowItem>()
+            .Where(window => string.Equals(window.ProcessName, "msedge", StringComparison.OrdinalIgnoreCase)
+                && window.Title.Contains("업무포털", StringComparison.Ordinal))
+            .ToArray();
+        if (candidates.Length == 1) _browserWindows.SelectedItem = candidates[0];
     }
 
     /// <summary>
@@ -1168,6 +1209,7 @@ public sealed partial class MainForm : Form
 
         _sessionCheckCancellationSource?.Cancel();
         _approvalBadgeCancellationSource?.Cancel();
+        _fieldTripReportCancellationSource?.Cancel();
         _topDock?.SetExpanded(false);
         _workflowRunning = true;
         _workflowCancellationSource = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -1220,6 +1262,7 @@ public sealed partial class MainForm : Form
             _pendingTaskSystemName = exception.SystemName;
             if (_confirmedExpiredSystems.Add(exception.SystemName) && exception.SystemName == "K-에듀파인")
                 ResetNotificationObservations();
+            if (exception.SystemName == "나이스") CancelFieldTripReportReadForExpiredSession();
             ShowSourceWindowMaximized();
             SetStatus($"{exception.SystemName} 재로그인 필요 · {PortalTaskCatalog.GetName(taskKind)} 요청 대기 중");
             AppLogger.Info("Workflow", $"{taskKind}: 전체 브라우저 연결을 유지하고 {exception.SystemName} 재로그인 확인을 기다립니다.");
@@ -1249,6 +1292,8 @@ public sealed partial class MainForm : Form
             {
                 UpdateConnectionControls();
                 _ = RefreshApprovalBadgeAsync();
+                // Student-management navigation already awaits its explicit query.
+                // Let the ten-minute monitor perform the next automatic report read.
             }
         }
 
@@ -1279,6 +1324,7 @@ public sealed partial class MainForm : Form
         PortalTaskKind? taskToResume = null;
         var maximizeBrowser = false;
         var closeRecoveredSessionNotice = false;
+        var refreshFieldTripReports = false;
         CancellationTokenSource? checkCancellationSource = null;
         try
         {
@@ -1303,6 +1349,8 @@ public sealed partial class MainForm : Form
                 if (result.State == SessionSystemState.Healthy)
                 {
                     _lastSessionSuccessAt[result.SystemName] = now;
+                    if (result.SystemName == "나이스" && _confirmedExpiredSystems.Contains(result.SystemName))
+                        refreshFieldTripReports = true;
                     _confirmedExpiredSystems.Remove(result.SystemName);
                     _notifiedExpiredSystems.Remove(result.SystemName);
                     _notifiedRecoverySystems.Remove(result.SystemName);
@@ -1313,6 +1361,7 @@ public sealed partial class MainForm : Form
                         ResetNotificationObservations();
                     if (result.SystemName == "K-에듀파인")
                         SetApprovalBadge(null, "K-에듀파인 재로그인 후 건수를 확인합니다.");
+                    if (result.SystemName == "나이스") CancelFieldTripReportReadForExpiredSession();
                 }
             }
 
@@ -1410,6 +1459,10 @@ public sealed partial class MainForm : Form
             && !_isClosing && !IsDisposed && !Disposing && IsBrowserConnected())
         {
             BeginInvoke(() => _ = RunWorkflowAsync(pendingTaskToResume));
+        }
+        else if (refreshFieldTripReports && !_isClosing && !IsDisposed && !Disposing)
+        {
+            _ = RefreshFieldTripReportsAsync();
         }
     }
 
@@ -1577,6 +1630,7 @@ public sealed partial class MainForm : Form
         _sessionCheckCancellationSource?.Cancel();
         _portalSessionTimer.Stop();
         StopApprovalMonitoring();
+        StopFieldTripReportMonitoring();
         RestoreSourceWindowOpacity();
         _sourceTransparent = false;
         _sourceWindow = IntPtr.Zero;
@@ -1606,6 +1660,7 @@ public sealed partial class MainForm : Form
         {
             _connectionGeneration++;
             StopApprovalMonitoring();
+            StopFieldTripReportMonitoring();
             _sessionCheckCancellationSource?.Cancel();
             _portalSessionTimer.Stop();
             _sourceWindow = IntPtr.Zero;

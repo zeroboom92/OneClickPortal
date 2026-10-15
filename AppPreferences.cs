@@ -47,11 +47,14 @@ internal static class AppPreferences
         return key?.GetValue(LastAcknowledgedUpdateVersionValueName) as string;
     }
 
-    public static void SetLastAcknowledgedUpdateVersion(string version)
+    public static void SetLastAcknowledgedUpdateVersion(string? version)
     {
         using var key = Registry.CurrentUser.CreateSubKey(SettingsKeyPath, writable: true)
             ?? throw new InvalidOperationException("업데이트 안내 확인 기록을 저장하지 못했습니다.");
-        key.SetValue(LastAcknowledgedUpdateVersionValueName, version, RegistryValueKind.String);
+        if (version is null)
+            key.DeleteValue(LastAcknowledgedUpdateVersionValueName, throwOnMissingValue: false);
+        else
+            key.SetValue(LastAcknowledgedUpdateVersionValueName, version, RegistryValueKind.String);
     }
 
     public static PortalDisplayMode GetDisplayMode()
