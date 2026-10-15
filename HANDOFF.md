@@ -2,6 +2,14 @@
 
 작성일: 2026-09-22
 
+## 1.4.0 정식 배포 완료·공개 파일 검증 (2026-10-15)
+
+- 사용자 최종 지시 `배포해`에 따라 승인된 내용 그대로 게시했습니다. 배포 커밋 `67b72f615bf0ee526a3fe4fcb5fd1a0afe3c451e`, 태그 `v1.4.0`, [GitHub Actions 성공](https://github.com/zeroboom92/OneClickPortal/actions/runs/38678766071), [정식 릴리스](https://github.com/zeroboom92/OneClickPortal/releases/tag/v1.4.0)입니다.
+- 공개 릴리스의 본문은 승인한 RELEASE_NOTES와 줄바꿈 정규화 후 정확히 일치하며 draft/prerelease 모두 false입니다. Setup·portable·full·delta·RELEASES·releases.win.json 6개를 실제 내려받아 HTTP 200, 공개 API 크기·SHA256 digest 일치, full/delta 자동 업데이트 목록의 SHA1·크기 일치를 확인했습니다. 로컬 assets.win.json은 이전 버전과 마찬가지로 공개 업로드 대상이 아닌 내부 메타파일입니다.
+- 공개 full 패키지의 버전은 1.4.0이고 테스트 실행 스크립트·소스·모의 알림 저장소가 포함되지 않았습니다. CI에서 다시 빌드한 파일이므로 로컬 설치 패키지와 바이트 해시는 다릅니다. 실제 내려받은 DLL로 버전·안내·이력·10분 간격·프로필 잠금/식별 등 45개 검사를 통과했고, 네이티브 안내창 PNG가 사용자 검토 이미지와 SHA256 `61ED93502E48C65DC1AA8AE9D1F39108E2D205E51702BD0953BA56F7ECCC7EEA`까지 완전히 일치했습니다.
+- 공개 검증 기록은 `tmp/published-1.4.0-check/publication.json`, `asset-verification.json`, `verification.log`입니다. 게시 전 전체 자동 검사 221개와 안내 표시 정책 검사 38개도 통과했습니다. 검증 중 설치 프로그램을 실행하거나 사용자의 로그인·인증서·실제 알림 기록을 변경하지 않았습니다.
+- 최신 정식 버전은 1.4.0입니다. 기존 설치본은 트레이의 `완전히 종료` 후 일반 실행하면 자동 업데이트를 확인합니다. 촬영용 테스트 옵션 실행은 자동 업데이트를 건너뛰므로 설치본으로 실행해야 합니다. 소개 PPT/PDF/PNG와 로컬 검토·검증 자료는 저장소에 포함하지 않고 보존했습니다.
+
 ## 1.4.0 게시 승인 — 배포 진행 (2026-10-15)
 
 - 사용자께서 안내 문구·그림과 기능 범위를 검토한 뒤 `배포해`라고 최종 승인했습니다. 준비한 내용 그대로 1.4.0을 정식 게시합니다.
