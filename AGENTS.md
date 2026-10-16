@@ -24,6 +24,16 @@ dotnet build .\BrowserThumbnailPrototype.csproj --configuration Debug
 
 현재 .NET 8 Windows Forms 프로젝트이며, Chrome 또는 Edge 창을 찾아 최소화하고 흰색 2행 조작창에서 업무 버튼을 제공합니다. 조작창은 처음에 우측 하단에 표시되며 드래그로 이동할 수 있습니다.
 
+## 클라우드 개발 및 검증
+
+- 클라우드 개발용 초기 업로드 브랜치는 `codex/cloud-development-20261016`입니다. 작업 시작 시 이 브랜치의 최신 커밋과 `HANDOFF.md` 상단을 먼저 확인합니다.
+- 클라우드에서는 소스를 수정하고 가능한 자동 검사를 실행합니다. Windows Forms 앱 실행, 실제 로그인된 Edge 연결, 인증서 선택 및 실제 업무 화면 검증은 사용자 Windows PC에서 진행합니다.
+- Node.js 22 이상에서 `node scripts/test-cloud.mjs`를 실행하면 .NET과 브라우저 없이 동작하는 검사 파일 11개를 실행합니다. 모의 화면 실행과 소스 구조 검사이며, 전체 Windows 검사 통과나 실제 포털 연동 성공으로 설명하지 않습니다.
+- 나머지 검사 중 다수는 .NET 8 SDK로 임시 C# 프로그램을 빌드합니다. `student-notification-preview.test.mjs`는 Windows Forms 실행이 필요하고, 프로필 잠금 검사는 운영체제에 따라 의미가 다르므로 클라우드에서 전체 검사를 일괄 통과할 수 있다고 가정하지 않습니다.
+- Windows에서는 위의 Debug 빌드와 `node --test --test-concurrency=1 tests/*.test.mjs`로 전체 검사를 확인합니다. 수정한 기능의 실제 브라우저 연결 확인은 별도로 기록합니다.
+- 업로드에는 소스·검사·필수 자산·개발 문서를 포함합니다. 브라우저 프로필, 인증서, 로그인 정보, 학생 원문, 로컬 로그, `tmp/`, 빌드·설치 산출물, 소개 슬라이드는 포함하지 않습니다.
+- 클라우드 작업 결과는 작업 브랜치에 저장하여 PC에서 받아 검증합니다. 코드 업로드나 검사 통과는 배포 승인이 아니며, 정식 배포는 기존의 사용자 검토와 명시적 배포 지시를 따릅니다.
+
 ## 현재 상태
 
 - `MainForm.cs`: 가로형 UI, 브라우저 검색, 연결·최소화, 원본 열기, 연결 해제, 업무 버튼 UI

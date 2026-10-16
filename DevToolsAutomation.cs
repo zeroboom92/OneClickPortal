@@ -24,7 +24,13 @@ internal static class DevToolsDiscovery
     public const int DefaultPort = 9222;
     private const int PortProbeCount = 11;
 
-    private static readonly HttpClient HttpClient = new()
+    // This channel is always local. System proxy/PAC settings and redirects must
+    // never route browser inspection through a network server.
+    private static readonly HttpClient HttpClient = new(new HttpClientHandler
+    {
+        UseProxy = false,
+        AllowAutoRedirect = false,
+    })
     {
         Timeout = TimeSpan.FromSeconds(1),
     };
@@ -33,61 +39,100 @@ internal static class DevToolsDiscovery
         EducationOffice educationOffice,
         CancellationToken cancellationToken = default)
     {
-        var probes = Enumerable.Range(DefaultPort, PortProbeCount)
-            .Select(port => ProbePortalPortAsync(port, educationOffice, cancellationToken));
-        var results = await Task.WhenAll(probes);
-        cancellationToken.ThrowIfCancellationRequested();
-        return results.Where(port => port is not null).Min();
+        return (await InspectPortalPortsAsync(educationOffice, cancellationToken)).Port;
     }
 
-    private static async Task<int?> ProbePortalPortAsync(
+    public static Task<DevToolsDiscoveryResult> InspectPortalPortsAsync(
+        EducationOffice educationOffice, CancellationToken cancellationToken = default)
+    {
+        return InspectPortalPortsAsync(educationOffice,
+            (port, token) => ProbePortAsync(port, educationOffice, token), cancellationToken);
+    }
+
+    internal static async Task<DevToolsDiscoveryResult> InspectPortalPortsAsync(
+        EducationOffice office,
+        Func<int, CancellationToken, Task<DevToolsPortProbe>> probe,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var results = await Task.WhenAll(Enumerable.Range(DefaultPort, PortProbeCount)
+            .Select(port => probe(port, cancellationToken)));
+        cancellationToken.ThrowIfCancellationRequested();
+        var port = results.Where(result => result.Status == DevToolsProbeStatus.Ready)
+            .Select(result => (int?)result.Port).Min();
+        return new DevToolsDiscoveryResult(port, results);
+    }
+
+    internal static async Task<DevToolsPortProbe> ProbePortAsync(
         int port,
         EducationOffice educationOffice,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken = default)
     {
         try
         {
+            await GetBrowserWebSocketUriAsync(port, cancellationToken);
             var targets = await GetTargetsAsync(port, cancellationToken);
-            if (targets.Any(target => IsPortalRelatedTarget(target, educationOffice)))
-            {
-                return port;
-            }
+            var codes = EducationOfficeCatalog.All
+                .Where(office => targets.Any(target => IsPortalRelatedTarget(target, office)))
+                .Select(office => office.Code).ToArray();
+            return new DevToolsPortProbe(port,
+                codes.Contains(educationOffice.Code) ? DevToolsProbeStatus.Ready : DevToolsProbeStatus.NoPortalTarget,
+                codes);
         }
         catch (Exception exception) when (
             !cancellationToken.IsCancellationRequested
-            && exception is HttpRequestException or TaskCanceledException or JsonException)
+            && exception is HttpRequestException or OperationCanceledException or IOException
+                or JsonException or InvalidOperationException)
         {
-            // The port is not a compatible local DevTools endpoint.
+            var status = exception is JsonException or InvalidOperationException
+                || exception is HttpRequestException { StatusCode: not null }
+                ? DevToolsProbeStatus.InvalidResponse : DevToolsProbeStatus.Unreachable;
+            return new DevToolsPortProbe(port, status, Array.Empty<string>(), exception.GetType().Name);
         }
-
-        return null;
     }
 
     public static async Task<List<DevToolsTarget>> GetTargetsAsync(int port, CancellationToken cancellationToken = default)
     {
         await using var stream = await HttpClient.GetStreamAsync($"http://127.0.0.1:{port}/json/list", cancellationToken);
-        return await JsonSerializer.DeserializeAsync<List<DevToolsTarget>>(stream, cancellationToken: cancellationToken)
-            ?? new List<DevToolsTarget>();
+        var targets = await JsonSerializer.DeserializeAsync<List<DevToolsTarget>>(stream, cancellationToken: cancellationToken);
+        if (targets is null || targets.Any(target => target is null
+            || string.IsNullOrWhiteSpace(target.Id) || string.IsNullOrWhiteSpace(target.Type) || target.Url is null))
+            throw new JsonException("브라우저 탭 목록 형식이 올바르지 않습니다.");
+        return targets;
     }
 
     public static async Task<Uri> GetBrowserWebSocketUriAsync(int port, CancellationToken cancellationToken = default)
     {
         await using var stream = await HttpClient.GetStreamAsync($"http://127.0.0.1:{port}/json/version", cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        var value = document.RootElement.GetProperty("webSocketDebuggerUrl").GetString();
-        return value is null
-            ? throw new InvalidOperationException("브라우저 제어 주소를 찾지 못했습니다.")
-            : new Uri(value);
+        if (document.RootElement.ValueKind != JsonValueKind.Object
+            || !document.RootElement.TryGetProperty("webSocketDebuggerUrl", out var value)
+            || value.ValueKind != JsonValueKind.String
+            || !Uri.TryCreate(value.GetString(), UriKind.Absolute, out var uri)
+            || uri.Scheme != "ws" || uri.Port != port
+            || (uri.Host != "127.0.0.1" && uri.Host != "localhost" && uri.Host != "[::1]")
+            || !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment)
+            || !uri.AbsolutePath.StartsWith("/devtools/browser/", StringComparison.Ordinal)
+            || uri.AbsolutePath.Length <= "/devtools/browser/".Length)
+            throw new InvalidOperationException("로컬 브라우저 제어 주소가 올바르지 않습니다.");
+        return uri;
     }
 
     private static bool IsPortalRelatedTarget(DevToolsTarget target, EducationOffice educationOffice)
     {
         return target.Type is "page" or "iframe"
-            && (target.Url.Contains(educationOffice.PortalDomain, StringComparison.OrdinalIgnoreCase)
-                || target.Url.Contains(educationOffice.NiceDomain, StringComparison.OrdinalIgnoreCase)
-                || target.Url.Contains(educationOffice.EdufineDomain, StringComparison.OrdinalIgnoreCase));
+            && Uri.TryCreate(target.Url, UriKind.Absolute, out var uri)
+            && uri.Scheme == Uri.UriSchemeHttps
+            && (string.Equals(uri.Host, educationOffice.PortalDomain, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(uri.Host, educationOffice.NiceDomain, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(uri.Host, educationOffice.EdufineDomain, StringComparison.OrdinalIgnoreCase));
     }
 }
+
+internal enum DevToolsProbeStatus { Ready, NoPortalTarget, Unreachable, InvalidResponse }
+internal sealed record DevToolsPortProbe(int Port, DevToolsProbeStatus Status,
+    IReadOnlyList<string> OfficeCodes, string? FailureKind = null);
+internal sealed record DevToolsDiscoveryResult(int? Port, IReadOnlyList<DevToolsPortProbe> Probes);
 
 internal sealed class DevToolsSession : IAsyncDisposable
 {
@@ -102,6 +147,7 @@ internal sealed class DevToolsSession : IAsyncDisposable
 
     private DevToolsSession()
     {
+        _socket.Options.Proxy = null;
     }
 
     public static async Task<string> CreateTargetAsync(

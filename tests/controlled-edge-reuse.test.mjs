@@ -21,7 +21,7 @@ test('successful reuse returns before profile permission writes and a second Edg
     .split('var edgePath = FindEdgeExecutable();')[0];
   const refreshAt = reuse.indexOf('RefreshBrowserWindows();');
   const selectAt = reuse.indexOf('SelectLaunchedPortalEdge();');
-  const returnAt = reuse.indexOf('return;');
+  const returnAt = reuse.indexOf('return;', selectAt);
   assert.ok(refreshAt >= 0 && selectAt > refreshAt && returnAt > selectAt,
     'Reuse must refresh, select the launched portal window and return within its success branch.');
   assert.doesNotMatch(reuse, /PrepareControlledProfile|Process\.Start|Preferences|lockfile/);
@@ -38,6 +38,8 @@ test('production reuse creates a visible new window and waits for activate plus 
   assert.match(entry, /CancelAfter\(TimeSpan\.FromSeconds\(8\)\)/);
   assert.match(entry, /DevToolsSession\.CreateTargetAsync\(port, uri, token, newWindow: true\)/);
   assert.match(entry, /await session\.ActivateTargetAsync\(token\);\s*await session\.MaximizeTargetWindowAsync\(token\);/);
+  assert.match(entry, /TryReuseAcrossPortsAsync\(office,/);
+  assert.match(launcher, /new HttpClientHandler \{ UseProxy = false, AllowAutoRedirect = false \}/);
   const create = devtools.split('public static async Task<string> CreateTargetAsync(')[1]
     .split('public static async Task<DevToolsSession> ConnectAsync(')[0];
   assert.match(create, /bool newWindow = false/);
@@ -61,10 +63,15 @@ test('actual controlled Edge reuse implementation with offline version and brows
       assert.ok(selection.includes('_sourceWindow') && selection.includes('_browserWindows.Items'));
       await writeFile(join(directory, 'Program.cs'), probe.replace('/* PRODUCTION_SELECTION */', selection));
       await run('dotnet', ['build', project, '--configuration', 'Release', '--nologo'],
-        { timeout: 80_000, maxBuffer: 1024 * 1024 });
+        { timeout: 80_000, maxBuffer: 1024 * 1024 }).catch(error => {
+          throw new Error(error.stdout + error.stderr, { cause: error });
+        });
       const assembly = join(directory, 'bin', 'Release', 'net8.0', 'Probe.dll');
       const cases = [
         ['versions', 'accepts local Edge metadata; rejects Chrome, remote sockets and malformed metadata'],
+        ['available-port', 'occupied base port selects and releases an alternate port; exhaustion has a clear failure'],
+        ['alternate-port', 'parallel production-range probing reuses the official portal on an alternate port'],
+        ['multiport-ambiguity', 'multiple compatible endpoints prefer one official portal and reject ambiguous reuse'],
         ['reuse-existing', 'activates the one exact HTTPS portal page without creating another window'],
         ['create-window', 'creates one official portal window when there is no official portal page'],
         ['ambiguous', 'multiple official portal pages cause no browser mutation'],
@@ -91,6 +98,8 @@ const probe = String.raw`
 using BrowserThumbnailPrototype;
 using System.Text.Json;
 using System.Net.WebSockets;
+using System.Net;
+using System.Net.Sockets;
 
 void Check(bool ok, string message) { if (!ok) throw new Exception(message); }
 JsonElement Version(string browser = "Edg/155.0.4283.45", string socket = "ws://127.0.0.1:9222/devtools/browser/test-id") =>
@@ -99,7 +108,60 @@ var scenario = args.Single();
 var office = EducationOfficeCatalog.GetByCode("jbe");
 const int port = 9222;
 
-if (scenario == "versions")
+if (scenario == "available-port")
+{
+    var listeners = new List<TcpListener>();
+    try
+    {
+        void Occupy(int candidate)
+        {
+            var listener = new TcpListener(IPAddress.Loopback, candidate) { ExclusiveAddressUse = true };
+            try { listener.Start(); listeners.Add(listener); }
+            catch (SocketException) { listener.Stop(); } // An existing local service already occupies it.
+        }
+        Occupy(port);
+        var available = ControlledEdgeLauncher.FindAvailablePort();
+        Check(available > port && available <= port + 10, "Occupied 9222 was reused or alternate port escaped discovery range.");
+        var released = new TcpListener(IPAddress.Loopback, available) { ExclusiveAddressUse = true };
+        try { released.Start(); } // A successful probe must immediately release its reservation.
+        finally { released.Stop(); }
+        foreach (var candidate in Enumerable.Range(port + 1, 10)) Occupy(candidate);
+        var exhausted = false;
+        try { ControlledEdgeLauncher.FindAvailablePort(); }
+        catch (InvalidOperationException exception) { exhausted = exception.Message.Contains("9222~9232"); }
+        Check(exhausted, "Occupied discovery range did not fail clearly.");
+    }
+    finally { foreach (var listener in listeners) listener.Stop(); }
+}
+else if (scenario == "alternate-port")
+{
+    var fixture = new PortReuseFixture(office) { RequireParallelProbe = true };
+    fixture.Endpoints[9227] = [new("alternate-portal", "page", "업무포털", office.PortalUri.AbsoluteUri)];
+    using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+    Check(await fixture.Run(deadline.Token), "Alternate local Edge was not reused.");
+    Check(fixture.ProbedPorts.Order().SequenceEqual(Enumerable.Range(9222, 11)), "Reuse skipped part of the discovery range.");
+    Check(fixture.Mutations.SequenceEqual(new[] { "activate:9227:alternate-portal" }), "Alternate Edge was recreated or the wrong endpoint was activated.");
+}
+else if (scenario == "multiport-ambiguity")
+{
+    var preferred = new PortReuseFixture(office);
+    preferred.Endpoints[9222] = [];
+    preferred.Endpoints[9232] = [new("official", "page", "업무포털", office.PortalUri.AbsoluteUri)];
+    Check(await preferred.Run(), "Unique official portal was not preferred over an empty compatible Edge.");
+    Check(preferred.Mutations.SequenceEqual(new[] { "activate:9232:official" }), "Empty compatible Edge received a new portal window.");
+    foreach (var withPortals in new[] { false, true })
+    {
+        var ambiguous = new PortReuseFixture(office);
+        ambiguous.Endpoints[9222] = withPortals ? [new("first", "page", "업무포털", office.PortalUri.AbsoluteUri)] : [];
+        ambiguous.Endpoints[9223] = withPortals ? [new("second", "page", "업무포털", office.PortalUri.AbsoluteUri)] : [];
+        Check(!await ambiguous.Run() && ambiguous.Mutations.Count == 0, "Ambiguous endpoints were guessed or mutated.");
+    }
+    var duplicate = new PortReuseFixture(office);
+    duplicate.Endpoints[9223] = [new("a", "page", "업무포털", office.PortalUri.AbsoluteUri), new("b", "page", "업무포털", office.PortalUri.AbsoluteUri)];
+    duplicate.Endpoints[9224] = [new("c", "page", "업무포털", office.PortalUri.AbsoluteUri)];
+    Check(!await duplicate.Run() && duplicate.Mutations.Count == 0, "An ambiguous portal endpoint was ignored during selection.");
+}
+else if (scenario == "versions")
 {
     foreach (var host in new[] { "127.0.0.1", "localhost", "[::1]" })
         Check(ControlledEdgeLauncher.IsReusableVersion(Version(socket: $"ws://{host}:{port}/devtools/browser/test-id"), port), "Local Edge socket rejected: " + host);
@@ -265,6 +327,33 @@ internal sealed class ReuseFixture(EducationOffice office)
             (port, id, token) => { Validate(port, token); Events.Add("activate:" + id); ActivateCalls++; Fail("activate"); return Task.CompletedTask; },
             operationToken, userToken);
     }
+}
+
+internal sealed class PortReuseFixture(EducationOffice office)
+{
+    public readonly Dictionary<int, List<DevToolsTarget>> Endpoints = [];
+    public readonly List<int> ProbedPorts = [];
+    public readonly List<string> Mutations = [];
+    public bool RequireParallelProbe;
+    private readonly TaskCompletionSource _allProbes = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public Task<bool> Run(CancellationToken operationToken = default) =>
+        ControlledEdgeLauncher.TryReuseAcrossPortsAsync(office,
+            async (candidate, token) =>
+            {
+                lock (ProbedPorts)
+                {
+                    ProbedPorts.Add(candidate);
+                    if (ProbedPorts.Count == 11) _allProbes.TrySetResult();
+                }
+                if (RequireParallelProbe) await _allProbes.Task.WaitAsync(token);
+                if (!Endpoints.ContainsKey(candidate)) throw new HttpRequestException("No endpoint.");
+                return JsonSerializer.SerializeToElement(new { Browser = "Edg/155.0.4283.45", webSocketDebuggerUrl = $"ws://127.0.0.1:{candidate}/devtools/browser/id" });
+            },
+            (candidate, token) => Task.FromResult(Endpoints[candidate]),
+            (candidate, uri, token) => { Mutations.Add("create:" + candidate); return Task.FromResult("created"); },
+            (candidate, id, token) => { Mutations.Add($"activate:{candidate}:{id}"); return Task.CompletedTask; },
+            operationToken);
 }
 
 internal sealed record BrowserWindowItem(string ProcessName, string Title);

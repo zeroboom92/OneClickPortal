@@ -931,16 +931,20 @@ public sealed partial class MainForm : Form
         {
             SetConnectionStatus($"{selected.DisplayName} 연결 확인 중");
             var educationOffice = EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode());
-            _devToolsPort = await DevToolsDiscovery.FindPortalPortAsync(
+            AppLogger.Info("Connection", $"제어 채널 확인: version={UpdateAnnouncement.CurrentVersion}, "
+                + $"office={educationOffice.Code}, process={selected.ProcessName}");
+            var discovery = await DevToolsDiscovery.InspectPortalPortsAsync(
                 educationOffice,
                 _workflowCancellationSource.Token);
+            _devToolsPort = discovery.Port;
             if (_devToolsPort is null)
             {
-                SetConnectionStatus($"{selected.DisplayName} 로그인 확인 필요");
+                keepPendingTaskAfterFailure = _pendingTaskKind is not null;
+                ResetFailedBrowserConnection();
+                SetConnectionStatus("연결 실패 · 원인 안내 확인");
                 MessageBox.Show(
                     this,
-                    "선택한 브라우저의 업무포털 제어 채널을 찾지 못했습니다.\r\n"
-                    + "'로그인'으로 연 Edge에서 업무포털에 로그인한 뒤 다시 연결해 주세요.",
+                    EdgeChannelDiagnostics.DescribeFailure(educationOffice, discovery),
                     "자동화 연결 필요",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -1006,12 +1010,13 @@ public sealed partial class MainForm : Form
                 NativeMethods.SetForegroundWindow(_sourceWindow);
             }
 
-            _sourceWindow = IntPtr.Zero;
-            _connectedProcessName = null;
-            _devToolsPort = null;
-            _connectionGeneration++;
+            ResetFailedBrowserConnection();
             SetConnectionStatus("연결 실패");
-            MessageBox.Show(this, exception.Message, "업무 시스템 준비 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            var policyHints = EdgeChannelDiagnostics.DescribePolicyHints();
+            MessageBox.Show(this, exception.Message
+                + (string.IsNullOrEmpty(policyHints) ? "" : "\r\n\r\n" + policyHints)
+                + "\r\n\r\n문의하실 때 아래 로그 파일을 함께 전달해 주세요.\r\n" + AppLogger.CurrentLogPath,
+                "업무 시스템 준비 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
         {
@@ -1035,22 +1040,37 @@ public sealed partial class MainForm : Form
         }
     }
 
+    private void ResetFailedBrowserConnection()
+    {
+        _sourceWindow = IntPtr.Zero;
+        _sourceTransparent = false;
+        _connectedProcessName = null;
+        _devToolsPort = null;
+        _connectionGeneration++;
+    }
+
     private async Task LaunchControlledEdgeAsync()
     {
         using var autoHidePause = _topDock?.SuspendAutoHide();
+        if (_workflowRunning) return;
+        _workflowRunning = true;
+        UpdateConnectionControls();
         try
         {
             var educationOffice = EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode());
             if (await ControlledEdgeLauncher.TryReuseAsync(educationOffice))
             {
+                if (_isClosing || IsDisposed || Disposing) return;
                 ResetNotificationObservations();
                 SetStatus("업무포털 로그인 창을 열었습니다. 로그인 후 연결을 눌러 주세요.");
                 await Task.Delay(500);
+                if (_isClosing || IsDisposed || Disposing) return;
                 RefreshBrowserWindows();
                 SelectLaunchedPortalEdge();
                 return;
             }
 
+            if (_isClosing || IsDisposed || Disposing) return;
             var edgePath = FindEdgeExecutable();
             if (edgePath is null)
             {
@@ -1065,7 +1085,8 @@ public sealed partial class MainForm : Form
                 FileName = edgePath,
                 UseShellExecute = false,
             };
-            startInfo.ArgumentList.Add($"--remote-debugging-port={DevToolsDiscovery.DefaultPort}");
+            var port = ControlledEdgeLauncher.FindAvailablePort();
+            startInfo.ArgumentList.Add($"--remote-debugging-port={port}");
             startInfo.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
             startInfo.ArgumentList.Add($"--user-data-dir={profilePath}");
             startInfo.ArgumentList.Add("--start-maximized");
@@ -1085,18 +1106,58 @@ public sealed partial class MainForm : Form
                 return;
             }
             startInfo.ArgumentList.Add(educationOffice.PortalUri.AbsoluteUri);
-            Process.Start(startInfo);
+            using var launchedProcess = Process.Start(startInfo);
             ResetNotificationObservations();
 
-            SetStatus("업무포털 로그인 창을 열었습니다. 로그인 후 창 목록을 새로고침해 주세요.");
-            await Task.Delay(1500);
+            SetStatus("업무포털 로그인 창의 연결 채널을 확인하고 있습니다.");
+            var probe = await WaitForLaunchedEdgeChannelAsync(port, educationOffice);
+            if (_isClosing || IsDisposed || Disposing) return;
             RefreshBrowserWindows();
             SelectLaunchedPortalEdge();
+            if (probe.Status is DevToolsProbeStatus.Ready or DevToolsProbeStatus.NoPortalTarget)
+            {
+                AppLogger.Info("EdgeLaunch", $"로그인 창 제어 채널 준비 완료: port={port}, office={educationOffice.Code}");
+                SetStatus("업무포털 로그인 창을 열었습니다. 로그인 후 연결을 눌러 주세요.");
+            }
+            else
+            {
+                SetStatus("로그인 창의 연결 채널 확인 실패 · 원인 안내 확인");
+                MessageBox.Show(this, EdgeChannelDiagnostics.DescribeFailure(educationOffice,
+                    new DevToolsDiscoveryResult(null, new[] { probe })),
+                    "로그인 창 연결 확인", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
         }
         catch (Exception exception)
         {
+            if (_isClosing || IsDisposed || Disposing) return;
+            AppLogger.Error("EdgeLaunch", "로그인 창 준비 실패", exception);
             MessageBox.Show(this, exception.Message, "Edge 실행 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+        finally
+        {
+            _workflowRunning = false;
+            if (!_isClosing && !IsDisposed && !Disposing) UpdateConnectionControls();
+        }
+    }
+
+    private async Task<DevToolsPortProbe> WaitForLaunchedEdgeChannelAsync(int port, EducationOffice office)
+    {
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+        var last = new DevToolsPortProbe(port, DevToolsProbeStatus.Unreachable, Array.Empty<string>());
+        try
+        {
+            while (!_isClosing && !IsDisposed && !Disposing)
+            {
+                last = await DevToolsDiscovery.ProbePortAsync(port, office, cancellation.Token);
+                if (last.Status is DevToolsProbeStatus.Ready or DevToolsProbeStatus.NoPortalTarget) return last;
+                await Task.Delay(300, cancellation.Token);
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // Keep the last bounded probe result for the actionable failure notice.
+        }
+        return last;
     }
 
     private void SelectLaunchedPortalEdge()
