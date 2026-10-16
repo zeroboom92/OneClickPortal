@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace BrowserThumbnailPrototype;
 
 internal sealed class SettingsForm : Form
@@ -235,6 +237,13 @@ internal sealed class SettingsForm : Form
         };
         infoPanel.Controls.Add(copyrightLabel);
 
+        var supportButton = new Button();
+        StyleButton(supportButton, "문의하기", 90, Color.FromArgb(241, 244, 248), Color.FromArgb(74, 84, 100));
+        supportButton.Location = new Point(24, 573);
+        supportButton.AccessibleDescription = "기본 브라우저에서 문의 작성 화면을 엽니다. 선택한 교육청과 앱 버전을 함께 전달합니다.";
+        supportButton.Click += (_, _) => OpenSupportInquiry();
+        Controls.Add(supportButton);
+
         var cancelButton = new Button();
         StyleButton(cancelButton, "취소", 78, Color.FromArgb(241, 244, 248), Color.FromArgb(74, 84, 100));
         cancelButton.Location = new Point(221, 573);
@@ -327,6 +336,22 @@ internal sealed class SettingsForm : Form
     private static string GetDisplayVersion()
     {
         return UpdateAnnouncement.CurrentVersion;
+    }
+
+    private void OpenSupportInquiry()
+    {
+        var startInfo = SupportInquiry.CreateStartInfo(EducationOfficeCode, GetDisplayVersion());
+        try
+        {
+            Process.Start(startInfo);
+        }
+        catch (Exception exception)
+        {
+            AppLogger.Error("Support", "문의 작성 화면 열기 실패", exception);
+            MessageBox.Show(this,
+                $"기본 브라우저를 열지 못했습니다.\n브라우저에서 다음 주소를 열어 문의해 주세요.\n\n{startInfo.FileName}",
+                "문의하기", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
     }
 
     private void UpdateOpacityLabel()

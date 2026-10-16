@@ -1,0 +1,75 @@
+name: Windows test build
+
+on:
+  push:
+    branches:
+      - "codex/support-inquiry-preview-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run cloud checks
+        run: node scripts/test-cloud.mjs
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish Windows test application
+        run: dotnet publish BrowserThumbnailPrototype.csproj --configuration Release --runtime win-x64 --self-contained true --output preview
+
+      - name: Add preview launcher
+        shell: pwsh
+        run: |
+          $launcher = @'
+          @echo off
+          setlocal
+          cd /d "%~dp0"
+          start "" "%~dp0OneClickPortal.exe" --dock-preview
+          endlocal
+          '@
+          [System.IO.File]::WriteAllText("$PWD/preview/StartPreview.cmd", ($launcher -replace "`r?`n", "`r`n"), [System.Text.Encoding]::ASCII)
+          $instructions = @'
+          문의하기 버튼 테스트본 (Windows x64)
+
+          1. 기존 원클릭과 테스트본을 트레이 메뉴의 완전히 종료로 종료합니다.
+          2. ZIP 전체를 풀고 StartPreview.cmd를 실행합니다.
+          3. 설정에서 문의하기를 눌러 기본 브라우저에 작성 주소가 열리는지 확인합니다.
+
+          .NET 런타임이 포함되어 있습니다. 설정은 기존 앱과 공유합니다.
+          사이트의 작성 폼 자동 열기와 자동 입력 처리는 사이트 소스 확인 후 추가해야 합니다.
+          '@
+          [System.IO.File]::WriteAllText("$PWD/preview/테스트 방법.txt", $instructions, [System.Text.UTF8Encoding]::new($true))
+
+      - name: Upload test application
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: OneClickPortal-SupportPreview-win-x64
+          path: preview/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Show download link
+        shell: pwsh
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          "[Windows 테스트 ZIP 다운로드]($env:ARTIFACT_URL)" >> $env:GITHUB_STEP_SUMMARY
+          "ZIP 전체를 풀고 StartPreview.cmd를 실행합니다. 다운로드하려면 GitHub 로그인이 필요합니다." >> $env:GITHUB_STEP_SUMMARY
