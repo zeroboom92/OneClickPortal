@@ -11,6 +11,7 @@ internal enum NotificationKind
     FieldTrip,
     Absence,
     FieldTripReport,
+    AbsencePending = 4,
 }
 
 // Id must be stable for the source system. Never pass student names, document bodies,
@@ -33,12 +34,14 @@ internal sealed record PortalNotification(
 /// Stores generic notification summaries, never source IDs, scopes, names or document text.
 /// Count and new-submission baselines exist only in memory. Pending field-trip reports
 /// notify on their first observation and retain only hashed deduplication keys on disk.
+/// Pending absence reports retain daily scoped fingerprints for 35 Korea calendar days.
 /// Callers must reject failed, incomplete or unauthenticated snapshots before observing them.
 /// </summary>
 internal sealed class NotificationCenter
 {
     internal const int MaximumEntries = 300;
     internal const int MaximumRememberedItems = 1000;
+    internal const int PendingAbsenceRetentionDays = 35;
     private const int MaximumStoreBytes = 16 * 1024 * 1024;
     private readonly object syncRoot = new();
     private readonly string storagePath;
@@ -48,6 +51,9 @@ internal sealed class NotificationCenter
     // Keep these independently of the 300 visible entries and all in-memory baselines.
     // Raw report IDs and the stable office/account/class scope never leave the caller.
     private readonly HashSet<string> notifiedFieldTripReports = new(StringComparer.Ordinal);
+    // Dates are Korea calendar dates; values contain only scoped source fingerprints.
+    // Reading or clearing visible history must not repeat the same day's pending alerts.
+    private readonly Dictionary<DateOnly, HashSet<string>> notifiedPendingAbsenceDays = [];
     private bool initialReadFailed;
     private bool hasPersistenceError;
 
@@ -204,6 +210,74 @@ internal sealed class NotificationCenter
         return added.AsReadOnly();
     }
 
+    /// <summary>
+    /// Observe a complete successful list of absence reports awaiting receipt. Existing
+    /// reports notify on the first Korea-day observation; new IDs notify during that day.
+    /// Scope must identify the office/account/school, excluding browser and class filters.
+    /// Failed, partial, loading and unauthenticated snapshots must never reach this method.
+    /// </summary>
+    public IReadOnlyList<PortalNotification> ObservePendingAbsenceReports(
+        IReadOnlyList<NotificationSourceItem>? items, string scope, DateTimeOffset? now = null)
+    {
+        if (!IsValid(NotificationKind.AbsencePending, scope) || items is null)
+            return Array.Empty<PortalNotification>();
+        var current = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in items)
+        {
+            if (item is null || string.IsNullOrWhiteSpace(item.Id) || item.Id.Length > 2048)
+                return Array.Empty<PortalNotification>();
+            // The source summary is intentionally ignored, including for notifications.
+            current.Add(Fingerprint(NotificationKind.AbsencePending, scope, item.Id));
+        }
+        var timestamp = now ?? DateTimeOffset.Now;
+        DateOnly day;
+        try { day = DateOnly.FromDateTime(timestamp.ToOffset(TimeSpan.FromHours(9)).DateTime); }
+        catch (ArgumentOutOfRangeException) { return Array.Empty<PortalNotification>(); }
+        var oldestDay = DateOnly.FromDayNumber(Math.Max(0, day.DayNumber - PendingAbsenceRetentionDays + 1));
+        List<PortalNotification> added = [];
+        bool persistenceChanged;
+        lock (syncRoot)
+        {
+            if (initialReadFailed) return Array.Empty<PortalNotification>();
+            var previousPersistenceError = hasPersistenceError;
+            var previousEntries = entries.ToArray();
+            // Retained sets are immutable during this transaction, so restoring these
+            // references also restores pruned dates after an unsuccessful atomic write.
+            var previousDays = notifiedPendingAbsenceDays.ToArray();
+            var pruned = false;
+            foreach (var date in notifiedPendingAbsenceDays.Keys
+                .Where(date => date < oldestDay || date > day).ToArray())
+                pruned |= notifiedPendingAbsenceDays.Remove(date);
+            notifiedPendingAbsenceDays.TryGetValue(day, out var previousToday);
+            var today = previousToday is null
+                ? new HashSet<string>(StringComparer.Ordinal)
+                : new HashSet<string>(previousToday, StringComparer.Ordinal);
+            var newCount = 0;
+            foreach (var key in current)
+                if (today.Add(key)) newCount++;
+            if (newCount > 0)
+            {
+                notifiedPendingAbsenceDays[day] = today;
+                added.Add(Create(NotificationKind.AbsencePending, newCount, timestamp));
+                AddAndSave(added);
+            }
+            else if (pruned || hasPersistenceError) Save();
+            if (hasPersistenceError)
+            {
+                // Display only alerts whose deduplication keys are durable. A retry
+                // must still observe every report that was never successfully published.
+                entries.Clear();
+                entries.AddRange(previousEntries);
+                notifiedPendingAbsenceDays.Clear();
+                foreach (var pair in previousDays) notifiedPendingAbsenceDays.Add(pair.Key, pair.Value);
+                added.Clear();
+            }
+            persistenceChanged = previousPersistenceError != hasPersistenceError;
+        }
+        if (added.Count > 0 || persistenceChanged) Changed?.Invoke(this, EventArgs.Empty);
+        return added.AsReadOnly();
+    }
+
     public void MarkRead(string id)
     {
         bool changed;
@@ -274,6 +348,7 @@ internal sealed class NotificationCenter
             NotificationKind.FieldTrip => ("교외체험학습 신청", $"새 교외체험학습 신청서가 {count}건 제출되었습니다."),
             NotificationKind.Absence => ("결석신고서 제출", $"새 결석신고서가 {count}건 제출되었습니다."),
             NotificationKind.FieldTripReport => ("교외체험학습 보고서 미상신", $"미상신 교외체험학습 보고서가 {count}건 있습니다. 보고서관리에서 확인해 주세요."),
+            NotificationKind.AbsencePending => ("결석신고서 접수대기", $"접수대기 중인 결석신고서가 {count}건 있습니다. 결석신고서관리에서 확인해 주세요."),
             _ => throw new ArgumentOutOfRangeException(nameof(kind)),
         };
         return new PortalNotification(id ?? Guid.NewGuid().ToString("N"), kind, title, message, now, isRead, sourceKey)
@@ -313,15 +388,30 @@ internal sealed class NotificationCenter
                     || fingerprint.Any(character => !(character is >= '0' and <= '9' or >= 'A' and <= 'F'))
                     || !reportKeys.Add(fingerprint)) throw new JsonException();
             }
+            var absenceDays = new Dictionary<DateOnly, HashSet<string>>();
+            if (store.NotifiedPendingAbsenceDays?.Count > PendingAbsenceRetentionDays) throw new JsonException();
+            foreach (var bucket in store.NotifiedPendingAbsenceDays ?? [])
+            {
+                if (bucket is null || bucket.Fingerprints is null || bucket.Fingerprints.Count == 0
+                    || absenceDays.ContainsKey(bucket.Date)) throw new JsonException();
+                var fingerprints = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var fingerprint in bucket.Fingerprints)
+                    if (fingerprint is null || fingerprint.Length != 64
+                        || fingerprint.Any(character => !(character is >= '0' and <= '9' or >= 'A' and <= 'F'))
+                        || !fingerprints.Add(fingerprint)) throw new JsonException();
+                absenceDays.Add(bucket.Date, fingerprints);
+            }
             entries.AddRange(store.Entries.OrderByDescending(entry => entry.CreatedAt)
                 .Select(entry => Create(entry.Kind, entry.ItemCount, entry.CreatedAt,
                     id: entry.Id, isRead: entry.IsRead)));
             notifiedFieldTripReports.UnionWith(reportKeys);
+            foreach (var pair in absenceDays) notifiedPendingAbsenceDays.Add(pair.Key, pair.Value);
         }
         catch (JsonException)
         {
             entries.Clear();
             notifiedFieldTripReports.Clear();
+            notifiedPendingAbsenceDays.Clear();
             AppLogger.Info("Notifications", "알림 기록 형식을 확인할 수 없어 빈 기록으로 복구합니다.");
             Save();
         }
@@ -348,7 +438,9 @@ internal sealed class NotificationCenter
             temporaryPath = Path.Combine(directory, $".notifications-{Guid.NewGuid():N}.tmp");
             var store = new NotificationStore(1, entries.Select(entry => new StoredNotification(
                 entry.Id, entry.Kind, entry.CreatedAt, entry.IsRead, entry.ItemCount)).ToList(),
-                notifiedFieldTripReports.Count == 0 ? null : notifiedFieldTripReports.Order(StringComparer.Ordinal).ToList());
+                notifiedFieldTripReports.Count == 0 ? null : notifiedFieldTripReports.Order(StringComparer.Ordinal).ToList(),
+                notifiedPendingAbsenceDays.Count == 0 ? null : notifiedPendingAbsenceDays.OrderBy(pair => pair.Key)
+                    .Select(pair => new StoredPendingAbsenceDay(pair.Key, pair.Value.Order(StringComparer.Ordinal).ToList())).ToList());
             using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write,
                 FileShare.None, 4096, FileOptions.WriteThrough))
             {
@@ -383,7 +475,10 @@ internal sealed class NotificationCenter
     private readonly record struct ObservationKey(NotificationKind Kind, string Scope);
     private sealed record NotificationStore(int Version, List<StoredNotification> Entries,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        List<string>? NotifiedFieldTripReportFingerprints = null);
+        List<string>? NotifiedFieldTripReportFingerprints = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        List<StoredPendingAbsenceDay>? NotifiedPendingAbsenceDays = null);
+    private sealed record StoredPendingAbsenceDay(DateOnly Date, List<string> Fingerprints);
     private sealed record StoredNotification(
         string Id, NotificationKind Kind, DateTimeOffset CreatedAt, bool IsRead, int ItemCount);
 

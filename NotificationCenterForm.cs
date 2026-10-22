@@ -275,6 +275,7 @@ internal sealed class NotificationCenterForm : Form
         NotificationKind.Approval => $"결재대기 {entry.ItemCount:N0}건 증가",
         NotificationKind.FieldTrip => $"교외체험학습 신청 {entry.ItemCount:N0}건",
         NotificationKind.Absence => $"결석신고서 제출 {entry.ItemCount:N0}건",
+        NotificationKind.AbsencePending => $"결석신고서 접수대기 {entry.ItemCount:N0}건",
         NotificationKind.FieldTripReport => $"교외체험학습 보고서 미상신 {entry.ItemCount:N0}건",
         _ => entry.Title.Replace('\r', ' ').Replace('\n', ' '),
     };

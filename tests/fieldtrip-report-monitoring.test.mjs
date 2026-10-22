@@ -24,7 +24,7 @@ test('connection checks only existing report screens after Nice is ready and bef
   const main = fs.readFileSync(join(root, 'MainForm.cs'), 'utf8');
   const connection = main.split('private async Task ConnectSelectedBrowserAsync()')[1]
     .split('catch (OperationCanceledException)')[0];
-  assert.match(connection, /await controller\.PrepareApplicationTargetsAsync\([\s\S]*?afterNiceReady: token => CheckFieldTripReportsOnConnectAsync\(/);
+  assert.match(connection, /await controller\.PrepareApplicationTargetsAsync\([\s\S]*?afterNiceReady: async token =>\s*\{\s*await CheckFieldTripReportsOnConnectAsync\(/);
   assert.ok(connection.indexOf('CheckFieldTripReportsOnConnectAsync(') < connection.indexOf('UpdateAutoRefreshTimer()'));
   assert.match(connection, /CheckFieldTripReportsOnConnectAsync\(\s*_devToolsPort\.Value,\s*educationOffice,\s*token\)/);
 
