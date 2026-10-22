@@ -9,14 +9,11 @@ internal static class EdgeIntegrationPolicy
 {
     private const string WxsClientProtocol = "wxsclient";
 
-    public static string ControlledProfilePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "OneClickPortal",
-        "EdgeAnalysisProfile");
+    public static string ControlledProfilePath => BrowserSupport.GetControlledProfilePath(PortalBrowser.Edge);
 
-    public static bool PrepareControlledProfile(EducationOffice educationOffice)
+    public static bool PrepareControlledProfile(EducationOffice educationOffice, PortalBrowser browser = PortalBrowser.Edge)
     {
-        return PrepareProfile(ControlledProfilePath, educationOffice);
+        return PrepareProfile(BrowserSupport.GetControlledProfilePath(browser), educationOffice);
     }
 
     private static bool PrepareProfile(string profilePath, EducationOffice educationOffice)
@@ -55,7 +52,7 @@ internal static class EdgeIntegrationPolicy
             File.Move(temporaryPath, preferencesPath, overwrite: true);
             AppLogger.Info(
                 "EdgeProfile",
-                $"전용 Edge 프로필에 업무포털·나이스·K-에듀파인 로컬 연결과 K-에듀파인 WXSClient 실행 허용을 설정했습니다: {educationOffice.Code}");
+                $"전용 브라우저 프로필에 업무포털·나이스·K-에듀파인 로컬 연결과 K-에듀파인 WXSClient 실행 허용을 설정했습니다: {educationOffice.Code}");
             return true;
         }
         catch (Exception exception) when (exception is UnauthorizedAccessException
@@ -64,7 +61,7 @@ internal static class EdgeIntegrationPolicy
             or JsonException
             or InvalidOperationException)
         {
-            AppLogger.Error("EdgeProfile", "전용 Edge 프로필의 인증서·K-에듀파인 권한을 설정하지 못했습니다. 전용 Edge 종료 후 재시도가 필요합니다.", exception);
+            AppLogger.Error("EdgeProfile", "전용 브라우저 프로필의 인증서·K-에듀파인 권한을 설정하지 못했습니다. 전용 브라우저 종료 후 재시도가 필요합니다.", exception);
             if (writeAttempted)
             {
                 TryDeleteTemporaryFile(temporaryPath);
@@ -77,7 +74,7 @@ internal static class EdgeIntegrationPolicy
     {
         return File.Exists(preferencesPath)
             ? JsonNode.Parse(File.ReadAllText(preferencesPath)) as JsonObject
-                ?? throw new JsonException("전용 Edge 프로필 설정 형식이 올바르지 않습니다.")
+                ?? throw new JsonException("전용 브라우저 프로필 설정 형식이 올바르지 않습니다.")
             : new JsonObject();
     }
 

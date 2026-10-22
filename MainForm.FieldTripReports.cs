@@ -23,7 +23,7 @@ public sealed partial class MainForm
         _fieldTripReportTimer.Start();
     }
 
-    private async Task CheckFieldTripReportsOnConnectAsync(PortalWorkflowController controller, int port,
+    private async Task CheckFieldTripReportsOnConnectAsync(int port,
         EducationOffice office, CancellationToken cancellationToken)
     {
         var generation = _connectionGeneration;
@@ -42,9 +42,9 @@ public sealed partial class MainForm
             await _portalOperationGate.WaitAsync(cancellation.Token);
             gateAcquired = true;
             if (!StillCurrent()) return;
-            SetConnectionStatus("교외체험학습 미상신 보고서 먼저 확인 중");
-            await controller.EnsureFieldTripReportReadyAsync(cancellation.Token);
-            if (!StillCurrent() || cancellation.IsCancellationRequested) return;
+            // Automatic checks only use an already-open report. Opening its menu is
+            // reserved for an explicit user request and must never change startup UI.
+            SetConnectionStatus("열린 교외체험학습 보고서 확인 중");
             var result = await NiceFieldTripReportReader.ReadAsync(port, office, cancellation.Token);
             if (StillCurrent() && !cancellation.IsCancellationRequested) ApplyFieldTripReportResult(result);
         }
@@ -56,7 +56,7 @@ public sealed partial class MainForm
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
             if (StillCurrent()) SetFieldTripReportStatus("교외체험학습 보고서 · 첫 조회를 완료하지 못했습니다. ↻로 다시 확인해 주세요.");
-            // Report setup must not prevent the other systems from connecting.
+            // A report read must not prevent the other systems from connecting.
             AppLogger.Info("FieldTripReports", $"연결 직후 보고서 확인 실패 ({exception.GetType().Name})");
         }
         finally
@@ -159,7 +159,7 @@ public sealed partial class MainForm
         if (result.State == FieldTripReportReadState.Available && result.Items is { } items
             && !string.IsNullOrWhiteSpace(result.Scope))
         {
-            SetFieldTripReportStatus($"교외체험학습 보고서 · 미상신 {items.Count:N0}건 · {DateTime.Now:HH:mm:ss} 확인\n연결 직후 먼저 확인하고, 이후 {FieldTripReportIntervalMinutes}분마다 조회합니다.");
+            SetFieldTripReportStatus($"교외체험학습 보고서 · 미상신 {items.Count:N0}건 · {DateTime.Now:HH:mm:ss} 확인\n열린 보고서관리에서 {FieldTripReportIntervalMinutes}분마다 조회합니다.");
             // A simulation shows only its three synthetic entries, even though its
             // menu clicks and connection preparation use the real logged-in browser.
             if (_studentNotificationPreview) return;
@@ -174,7 +174,7 @@ public sealed partial class MainForm
         {
             FieldTripReportReadState.PageMissing => "교외체험학습 보고서 · 나이스 화면이 열려 있지 않습니다.",
             FieldTripReportReadState.MultiplePages => "교외체험학습 보고서 · 나이스 탭이 여러 개라 확인할 대상을 정할 수 없습니다.",
-            FieldTripReportReadState.ReportPageMissing => "교외체험학습 보고서 · 보고서관리 탭이 닫혀 있습니다. 다시 연결하거나 나이스에서 보고서관리를 열어 주세요.",
+            FieldTripReportReadState.ReportPageMissing => "교외체험학습 보고서 · 보고서관리를 직접 열면 확인합니다.",
             FieldTripReportReadState.ScopeUnavailable => "교외체험학습 보고서 · 로그인 계정과 학교를 확인하지 못했습니다. 나이스 로그인 상태를 확인해 주세요.",
             FieldTripReportReadState.Busy => "교외체험학습 보고서 · 나이스 화면 작업이 끝난 뒤 다음 주기에 다시 확인합니다.",
             FieldTripReportReadState.QueryFailed => "교외체험학습 보고서 · 조회를 완료하지 못했습니다. 다음 주기에 다시 확인합니다.",

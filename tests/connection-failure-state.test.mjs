@@ -41,7 +41,7 @@ test('actual failure rollback restores retry controls; launch waits for a bounde
       const methods = [
         'private void ResetFailedBrowserConnection()',
         'private void UpdateConnectionControls()',
-        'private async Task<DevToolsPortProbe> WaitForLaunchedEdgeChannelAsync(int port, EducationOffice office)',
+        'private async Task<DevToolsPortProbe> WaitForLaunchedEdgeChannelAsync(int port, EducationOffice office,',
       ].map(method).join('\n');
       await writeFile(join(directory, 'Program.cs'), probe.replace('/* METHODS */', methods));
       await run('dotnet', ['build', join(directory, 'Probe.csproj'), '-c', 'Release', '--nologo'],
@@ -126,11 +126,12 @@ class Control
     public Color BackColor, ForeColor;
 }
 class EducationOffice { }
+enum PortalBrowser { Edge, Chrome }
 enum DevToolsProbeStatus { Ready, NoPortalTarget, Unreachable, InvalidResponse }
 record DevToolsPortProbe(int Port, DevToolsProbeStatus Status, IReadOnlyList<string> OfficeCodes);
 static class DevToolsDiscovery
 {
     public static Func<int, EducationOffice, CancellationToken, Task<DevToolsPortProbe>> Probe = null!;
-    public static Task<DevToolsPortProbe> ProbePortAsync(int port, EducationOffice office, CancellationToken token) => Probe(port, office, token);
+    public static Task<DevToolsPortProbe> ProbePortAsync(int port, EducationOffice office, CancellationToken token, PortalBrowser browser) => Probe(port, office, token);
 }
 `;

@@ -12,7 +12,7 @@ const run = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
 const xml = value => value.replaceAll('&', '&amp;').replaceAll('"', '&quot;');
 
-test('connection awaits the report check after Nice is ready and before Edufine and monitoring', () => {
+test('connection checks only existing report screens after Nice is ready and before Edufine and monitoring', () => {
   const controller = fs.readFileSync(join(root, 'PortalWorkflowController.cs'), 'utf8');
   const prepare = controller.split('public async Task PrepareApplicationTargetsAsync(')[1]
     .split('public async Task<IReadOnlyList<SessionSystemResult>> ExtendExpiringSessionsAsync(')[0];
@@ -26,13 +26,21 @@ test('connection awaits the report check after Nice is ready and before Edufine 
     .split('catch (OperationCanceledException)')[0];
   assert.match(connection, /await controller\.PrepareApplicationTargetsAsync\([\s\S]*?afterNiceReady: token => CheckFieldTripReportsOnConnectAsync\(/);
   assert.ok(connection.indexOf('CheckFieldTripReportsOnConnectAsync(') < connection.indexOf('UpdateAutoRefreshTimer()'));
+  assert.match(connection, /CheckFieldTripReportsOnConnectAsync\(\s*_devToolsPort\.Value,\s*educationOffice,\s*token\)/);
+
+  const monitor = fs.readFileSync(join(root, 'MainForm.FieldTripReports.cs'), 'utf8');
+  const reader = fs.readFileSync(join(root, 'NiceFieldTripReportReader.cs'), 'utf8');
+  assert.doesNotMatch(monitor, /PortalWorkflowController|Ensure\w*|Activate\w*|Maximize\w*|Navigate\w*|Open\w*Menu|Click\w*Menu/);
+  assert.doesNotMatch(reader, /PortalWorkflowController|Ensure\w*|Activate\w*|Maximize\w*|Navigate\w*|Open\w*Menu|Click\w*Menu/);
+  assert.match(reader, /if \(!platform\?\.getAllRunningAppInstances\) return result\('ReportPageMissing'\)/);
+  assert.match(reader, /if \(owners\.length !== 1\) return result\(owners\.length \? 'Busy' : 'ReportPageMissing'\)/);
 
   const workflow = main.split('private async Task RunWorkflowAsync(')[1]
     .split('private async Task CheckPortalSessionsInBackgroundAsync(')[0];
   assert.doesNotMatch(workflow, /RefreshFieldTripReportsAsync\(\)/);
 });
 
-test('actual report monitor checks on connection, polls every ten minutes, and preserves cancellation and deduplication',
+test('actual report monitor never opens a missing report screen and preserves polling, cancellation, and deduplication',
   { timeout: 120_000 }, async () => {
     const directory = await mkdtemp(join(tmpdir(), 'oneclick-report-monitoring-'));
     try {
@@ -46,7 +54,7 @@ test('actual report monitor checks on connection, polls every ten minutes, and p
       await writeFile(join(directory, 'Program.cs'), probe);
       const result = await run('dotnet', ['run', '--project', join(directory, 'Probe.csproj'), '--configuration', 'Release'],
         { timeout: 100_000 });
-      assert.match(result.stdout, /PASS: ten-minute timer, priority startup, no setting-triggered queries, manual refresh, deduplication, gate skipping, failure isolation, session expiry, cancellation, stale connection/);
+      assert.match(result.stdout, /PASS: existing-only startup, missing screen stays closed, ten-minute timer, no setting-triggered queries, manual refresh, deduplication, gate skipping, failure isolation, session expiry, cancellation, stale connection/);
     } finally {
       assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
       assert.ok(basename(directory).startsWith('oneclick-report-monitoring-'));
@@ -63,19 +71,38 @@ Directory.CreateDirectory(probeRoot);
 try
 {
     var office = new EducationOffice();
-    var controller = new PortalWorkflowController();
     MainForm Form(string name) => new(Path.Combine(probeRoot, name + ".json"));
+    NiceFieldTripReportReader.Reset();
+    NiceFieldTripReportReader.Handler = _ => Task.FromResult(new FieldTripReportReadResult(
+        null, null, FieldTripReportReadState.ReportPageMissing));
+    var missing = Form("missing");
+    missing.WorkflowRunning = true;
+    await missing.CheckOnConnect(office);
+    Check(NiceFieldTripReportReader.Reads == 1 && missing.PopupItems == 0 && missing.EntryCount == 0,
+        "An unopened report screen must stay unavailable without creating an alert on connection.");
+    Check(missing.ReportStatus.Contains("보고서관리를 직접 열면 확인합니다."),
+        "A missing report screen must tell the user to open it themselves, without reconnect instructions.");
+    Check(!missing.ReportStatus.Contains("다시 연결"), "Reconnect must not be offered as a way to open report management.");
+    Check(!missing.Reading && missing.GateCount == 1, "Missing-screen connection check leaked its state.");
+    missing.WorkflowRunning = false;
+    missing.UpdateMonitoring();
+    await missing.ScheduledRefresh();
+    await missing.ManualRefresh();
+    Check(NiceFieldTripReportReader.Reads == 3 && missing.PopupItems == 0 && missing.EntryCount == 0,
+        "Scheduled and manual checks must keep a missing report screen unavailable without alerting.");
+    Check(missing.ReportStatus.Contains("보고서관리를 직접 열면 확인합니다."),
+        "Repeated checks changed the manual-open guidance.");
+
     NiceFieldTripReportReader.Reset();
     var form = Form("initial");
     Check(form.TimerInterval == 600_000, "Report timer must be ten minutes.");
     form.WorkflowRunning = true;
-    await form.CheckOnConnect(controller, office);
-    Check(controller.Prepares == 1 && NiceFieldTripReportReader.Reads == 1,
-        "Connection must prepare and query the report while connection workflow is running.");
-    Check(string.Join(",", NiceFieldTripReportReader.Events) == "prepare,read",
-        "Report preparation must finish before the query starts.");
+    await form.CheckOnConnect(office);
+    Check(NiceFieldTripReportReader.Reads == 1,
+        "Connection must query an existing report screen while connection workflow is running.");
     Check(form.PopupItems == 1 && form.EntryCount == 1, "Existing unsubmitted report did not alert on connection.");
-    Check(form.ReportStatus.Contains("10분마다"), "User-facing status still shows the old polling interval.");
+    Check(form.ReportStatus.Contains("열린 보고서관리") && form.ReportStatus.Contains("10분마다"),
+        "User-facing status must describe ten-minute polling of an already-open report screen.");
     Check(!form.Reading && form.GateCount == 1, "Connection read did not release its gate and reading flag.");
     form.WorkflowRunning = false;
     for (var i = 0; i < 5; i++) form.UpdateMonitoring();
@@ -107,15 +134,13 @@ try
     // A first-check failure must leave the connection available for other systems.
     NiceFieldTripReportReader.Reset();
     var failed = Form("failure");
-    var failingController = new PortalWorkflowController
-        { PrepareHandler = _ => throw new InvalidOperationException("no report permission") };
-    await failed.CheckOnConnect(failingController, office);
-    Check(NiceFieldTripReportReader.Reads == 0 && failed.IsConnected && failed.GateCount == 1 && !failed.Reading,
-        "Report preparation failure blocked the connection or leaked the operation gate.");
-    var expiredController = new PortalWorkflowController
-        { PrepareHandler = _ => throw new PortalSessionExpiredException() };
+    NiceFieldTripReportReader.Handler = _ => throw new InvalidOperationException("no report permission");
+    await failed.CheckOnConnect(office);
+    Check(NiceFieldTripReportReader.Reads == 1 && failed.IsConnected && failed.GateCount == 1 && !failed.Reading,
+        "Report read failure blocked the connection or leaked the operation gate.");
+    NiceFieldTripReportReader.Handler = _ => throw new PortalSessionExpiredException();
     var expiryPropagated = false;
-    try { await failed.CheckOnConnect(expiredController, office); }
+    try { await failed.CheckOnConnect(office); }
     catch (PortalSessionExpiredException) { expiryPropagated = true; }
     Check(expiryPropagated && failed.GateCount == 1 && !failed.Reading,
         "Nice session expiry must reach connection recovery while releasing monitor state.");
@@ -125,7 +150,7 @@ try
     using var cancellation = new CancellationTokenSource();
     cancellation.Cancel();
     var cancelPropagated = false;
-    try { await canceled.CheckOnConnect(controller, office, cancellation.Token); }
+    try { await canceled.CheckOnConnect(office, cancellation.Token); }
     catch (OperationCanceledException) { cancelPropagated = true; }
     Check(cancelPropagated && canceled.GateCount == 1 && !canceled.Reading,
         "Caller cancellation was swallowed or leaked connection read state.");
@@ -135,7 +160,7 @@ try
     var completeReader = new TaskCompletionSource<FieldTripReportReadResult>(TaskCreationOptions.RunContinuationsAsynchronously);
     NiceFieldTripReportReader.Handler = _ => { readerEntered.SetResult(); return completeReader.Task; };
     var stale = Form("stale");
-    var staleRead = stale.CheckOnConnect(new PortalWorkflowController(), office);
+    var staleRead = stale.CheckOnConnect(office);
     await readerEntered.Task;
     stale.ChangeConnectionGeneration();
     completeReader.SetResult(NiceFieldTripReportReader.Pending);
@@ -143,29 +168,35 @@ try
     Check(stale.PopupItems == 0 && stale.EntryCount == 0 && stale.GateCount == 1 && !stale.Reading,
         "A result from a previous connection was applied after the connection changed.");
 
-    // A waiting connection check must revalidate generation before opening any menu.
+    // A waiting connection check must revalidate generation before reading the old connection.
     NiceFieldTripReportReader.Reset();
     var waiting = Form("waiting");
     waiting.HoldGate();
-    var waitingController = new PortalWorkflowController();
-    var waitingRead = waiting.CheckOnConnect(waitingController, office);
+    var waitingRead = waiting.CheckOnConnect(office);
     waiting.ChangeConnectionGeneration();
     waiting.ReleaseGate();
     await waitingRead;
-    Check(waitingController.Prepares == 0 && NiceFieldTripReportReader.Reads == 0 && waiting.GateCount == 1,
-        "A stale queued connection check opened a report menu.");
+    Check(NiceFieldTripReportReader.Reads == 0 && waiting.GateCount == 1 && !waiting.Reading,
+        "A stale queued connection check queried the old connection.");
 
-    var changedDuringPreparation = Form("prepared-stale");
-    var interruptedController = new PortalWorkflowController
+    foreach (var scheduled in new[] { false, true })
     {
-        PrepareHandler = _ => { changedDuringPreparation.ChangeConnectionGeneration(); return Task.CompletedTask; },
-    };
-    await changedDuringPreparation.CheckOnConnect(interruptedController, office);
-    Check(interruptedController.Prepares == 1 && NiceFieldTripReportReader.Reads == 0
-        && changedDuringPreparation.GateCount == 1 && !changedDuringPreparation.Reading,
-        "Connection change during menu preparation must prevent a query on the previous connection.");
+        NiceFieldTripReportReader.Reset();
+        var refreshEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completeRefresh = new TaskCompletionSource<FieldTripReportReadResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        NiceFieldTripReportReader.Handler = _ => { refreshEntered.SetResult(); return completeRefresh.Task; };
+        var staleRefresh = Form(scheduled ? "stale-scheduled" : "stale-manual");
+        var refresh = scheduled ? staleRefresh.ScheduledRefresh() : staleRefresh.ManualRefresh();
+        await refreshEntered.Task;
+        staleRefresh.ChangeConnectionGeneration();
+        completeRefresh.SetResult(NiceFieldTripReportReader.Pending);
+        await refresh;
+        Check(staleRefresh.PopupItems == 0 && staleRefresh.EntryCount == 0
+            && staleRefresh.GateCount == 1 && !staleRefresh.Reading,
+            "A refresh applied a result from a previous connection or leaked its gate.");
+    }
 
-    Console.WriteLine("PASS: ten-minute timer, priority startup, no setting-triggered queries, manual refresh, deduplication, gate skipping, failure isolation, session expiry, cancellation, stale connection");
+    Console.WriteLine("PASS: existing-only startup, missing screen stays closed, ten-minute timer, no setting-triggered queries, manual refresh, deduplication, gate skipping, failure isolation, session expiry, cancellation, stale connection");
 }
 finally
 {
@@ -213,29 +244,16 @@ namespace BrowserThumbnailPrototype
     internal static class NiceFieldTripReportReader
     {
         public static int Reads { get; private set; }
-        public static List<string> Events { get; } = [];
         public static Func<CancellationToken, Task<FieldTripReportReadResult>>? Handler { get; set; }
         public static FieldTripReportReadResult Pending => new([new("REPORT-A", "")], "TEST/USER/SCHOOL", FieldTripReportReadState.Available);
         public static Task<FieldTripReportReadResult> ReadAsync(int port, EducationOffice office, CancellationToken token)
         {
             Reads++;
-            Events.Add("read");
             return Handler?.Invoke(token) ?? Task.FromResult(Pending);
         }
-        public static void Reset() { Reads = 0; Events.Clear(); Handler = null; }
+        public static void Reset() { Reads = 0; Handler = null; }
     }
     internal sealed class PortalSessionExpiredException : Exception { }
-    internal sealed class PortalWorkflowController
-    {
-        public int Prepares { get; private set; }
-        public Func<CancellationToken, Task>? PrepareHandler { get; init; }
-        public Task EnsureFieldTripReportReadyAsync(CancellationToken token)
-        {
-            Prepares++;
-            NiceFieldTripReportReader.Events.Add("prepare");
-            return PrepareHandler?.Invoke(token) ?? Task.CompletedTask;
-        }
-    }
     public sealed partial class MainForm
     {
         private bool _isClosing;
@@ -260,8 +278,8 @@ namespace BrowserThumbnailPrototype
         internal bool IsConnected => _sourceWindow != IntPtr.Zero && _devToolsPort is not null;
         internal bool WorkflowRunning { set => _workflowRunning = value; }
         internal void UpdateMonitoring() => UpdateFieldTripReportMonitoring();
-        internal Task CheckOnConnect(PortalWorkflowController controller, EducationOffice office, CancellationToken token = default)
-            => CheckFieldTripReportsOnConnectAsync(controller, _devToolsPort!.Value, office, token);
+        internal Task CheckOnConnect(EducationOffice office, CancellationToken token = default)
+            => CheckFieldTripReportsOnConnectAsync(_devToolsPort!.Value, office, token);
         internal Task ScheduledRefresh() => RefreshScheduledFieldTripReportsAsync();
         internal Task ManualRefresh() => RefreshFieldTripReportsAsync();
         internal void HoldGate() => _portalOperationGate.Wait();

@@ -226,7 +226,7 @@ internal sealed partial class PortalWorkflowController
                 return new SessionSystemResult(
                     systemName,
                     SessionSystemState.Expired,
-                    "업무포털이 로그아웃되었습니다. Edge에서 다시 로그인해 주세요.");
+                    "업무포털이 로그아웃되었습니다. 브라우저에서 다시 로그인해 주세요.");
             }
 
             if (string.Equals(state, "HTTP_OK_OFFICIAL_CLICK", StringComparison.Ordinal)
@@ -315,7 +315,7 @@ internal sealed partial class PortalWorkflowController
                     return new SessionSystemResult(
                         systemName,
                         SessionSystemState.Expired,
-                        "나이스 서버 세션이 종료되었습니다. Edge에서 나이스에 다시 로그인해 주세요.");
+                        "나이스 서버 세션이 종료되었습니다. 브라우저에서 나이스에 다시 로그인해 주세요.");
                 }
 
                 if (await session.EvaluateBooleanAsync(NiceLoggedOutExpression(), cancellationToken: cancellationToken))
@@ -324,7 +324,7 @@ internal sealed partial class PortalWorkflowController
                     return new SessionSystemResult(
                         systemName,
                         SessionSystemState.Expired,
-                        "나이스가 로그아웃되었습니다. Edge에서 나이스에 다시 로그인해 주세요.");
+                        "나이스가 로그아웃되었습니다. 브라우저에서 나이스에 다시 로그인해 주세요.");
                 }
 
                 var niceExtensionResult = await session.EvaluateStringAsync(
@@ -350,7 +350,7 @@ internal sealed partial class PortalWorkflowController
                     return new SessionSystemResult(
                         systemName,
                         SessionSystemState.Expired,
-                        "나이스 서버 세션 DB가 유효하지 않습니다. Edge에서 나이스에 다시 로그인해 주세요.");
+                        "나이스 서버 세션 DB가 유효하지 않습니다. 브라우저에서 나이스에 다시 로그인해 주세요.");
                 }
 
                 if (string.Equals(niceExtensionResult, "STARTED", StringComparison.Ordinal)
@@ -386,7 +386,7 @@ internal sealed partial class PortalWorkflowController
                         systemName,
                         loggedOut ? SessionSystemState.Expired : SessionSystemState.Failed,
                         loggedOut
-                            ? "나이스가 로그아웃되었습니다. Edge에서 나이스에 다시 로그인해 주세요."
+                            ? "나이스가 로그아웃되었습니다. 브라우저에서 나이스에 다시 로그인해 주세요."
                             : "나이스 연장 요청에서 인증 응답이 반환되었습니다. 로그인 상태를 확인해 주세요.");
                 }
 
@@ -399,11 +399,12 @@ internal sealed partial class PortalWorkflowController
             var edufineState = await ReadEdufineSessionStateAsync(session, cancellationToken);
             if (edufineState.VisibleShutdown)
             {
+                await LogEdufineSessionDiagnosticsAsync(session, cancellationToken);
                 AppLogger.Info("SessionRefresh", "K-에듀파인: 화면에 표시된 사용시간 종료 안내를 확인했습니다.");
                 return new SessionSystemResult(
                     systemName,
                     SessionSystemState.Expired,
-                    "K-에듀파인 사용시간이 종료되었습니다. Edge에서 K-에듀파인에 다시 로그인해 주세요.");
+                    "K-에듀파인 사용시간이 종료되었습니다. 브라우저에서 K-에듀파인에 다시 로그인해 주세요.");
             }
 
             var confirmZeroTimer = edufineState.RemainingSeconds == 0;
@@ -412,6 +413,7 @@ internal sealed partial class PortalWorkflowController
             var edufineExtensionResult = await session.EvaluateStringAsync(
                 EdufineServerSessionCheckScript(confirmZeroTimer),
                 cancellationToken);
+            await LogEdufineSessionDiagnosticsAsync(session, cancellationToken);
             if (edufineExtensionResult is "Y" or "Y_RECENT")
             {
                 var confirmed = await ReadEdufineSessionStateAsync(session, cancellationToken);
@@ -432,7 +434,7 @@ internal sealed partial class PortalWorkflowController
                 return new SessionSystemResult(systemName, SessionSystemState.Healthy, "K-에듀파인 세션 연장 성공");
             }
 
-            if (edufineExtensionResult is "Y_RESET_UNAVAILABLE" or "Y_RESET_FAILED" or "Y_RESET_UNCONFIRMED")
+            if (edufineExtensionResult is "Y_RESET_UNAVAILABLE" or "Y_RESET_FAILED" or "Y_RESET_UNCONFIRMED" or "Y_TIMER_UNAVAILABLE")
             {
                 AppLogger.Info("SessionRefresh", $"K-에듀파인: 서버 생존 응답 Y 이후 사용시간 초기화를 확인하지 못했습니다. 상태={edufineExtensionResult}");
                 return new SessionSystemResult(systemName, SessionSystemState.Failed,
@@ -445,7 +447,7 @@ internal sealed partial class PortalWorkflowController
                 return new SessionSystemResult(
                     systemName,
                     SessionSystemState.Expired,
-                    "K-에듀파인 서버 세션이 종료되었습니다. Edge에서 K-에듀파인에 다시 로그인해 주세요.");
+                    "K-에듀파인 서버 세션이 종료되었습니다. 브라우저에서 K-에듀파인에 다시 로그인해 주세요.");
             }
 
             if (string.Equals(edufineExtensionResult, "STARTED", StringComparison.Ordinal)
@@ -494,6 +496,24 @@ internal sealed partial class PortalWorkflowController
         {
             AppLogger.Error("SessionRefresh", $"{systemName}: 세션 확인 실패", exception);
             return new SessionSystemResult(systemName, SessionSystemState.Failed, $"{systemName} 상태를 확인하지 못했습니다.");
+        }
+    }
+
+    private static async Task LogEdufineSessionDiagnosticsAsync(DevToolsSession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var json = await session.EvaluateStringAsync(EdufineSessionDiagnostics.Script(), cancellationToken);
+            AppLogger.Info("SessionDiagnostic", EdufineSessionDiagnostics.Format(json));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // Diagnostic collection must not change a successful renewal or expose errors from the page.
+            AppLogger.Info("SessionDiagnostic", "{\"schema\":1,\"status\":\"UNAVAILABLE\"}");
         }
     }
 
@@ -905,6 +925,8 @@ internal sealed partial class PortalWorkflowController
               if(!topForm
                 ||typeof topForm.fnSessionCheck!=='function'
                 ||typeof topForm.fnCallback!=='function')return 'NO_SESSION_METHOD';
+              const supportedUseTime=descriptor=>descriptor?.configurable===true&&descriptor.writable===true
+                &&typeof descriptor.value==='number'&&Number.isFinite(descriptor.value);
               const hasPositiveUseTime=form=>{
                 const remaining=form?.fv_nowUseEndTime;
                 if(typeof remaining==='number'&&Number.isFinite(remaining)&&remaining>0)return true;
@@ -951,43 +973,164 @@ internal sealed partial class PortalWorkflowController
               }
               state.ownerFormToken=formToken;
               state.ownerForm=topForm;
+              const diagnostic=(code,remaining=topForm.fv_nowUseEndTime)=>{
+                const events=state.diagnosticEvents||(state.diagnosticEvents=[]);
+                events.push({at:Date.now(),code,remaining:typeof remaining==='number'&&Number.isFinite(remaining)?remaining:null,
+                  requestId:Number(state.activeRequestId||state.requestSequence||0)});
+                if(events.length>16)events.shift();
+              };
+              const eventHandlers=()=>Array.isArray(topForm.ontimer?._user_handlers)
+                ?topForm.ontimer._user_handlers:null;
+              const officialExpiryTimer=fn=>{
+                if(typeof fn!=='function')return false;
+                const source=String(fn);
+                return source.includes('fv_useEndCeckTimerId')&&source.includes('fv_nowUseEndTime')
+                  &&source.includes('fnKillServerSession');
+              };
+              const timerBindingHealthy=guard=>{
+                if(!guard||guard.revision!==2||topForm.TopFrame_ontimer!==guard.timerWrapper
+                  ||topForm.fnResetUseEndCeckTimer!==guard.resetWrapper
+                  ||typeof topForm.removeEventHandler!=='function'||typeof topForm.addEventHandler!=='function')return false;
+                const handlers=eventHandlers();
+                return !handlers||(handlers.filter(h=>h.handler===guard.timerWrapper&&h.target===topForm).length===1
+                  &&!handlers.some(h=>h.target===topForm&&(h.handler===guard.originalTimer
+                    ||(h.handler!==guard.timerWrapper&&officialExpiryTimer(h.handler)))));
+              };
+              const previousTiming=topForm.__oneClickTimerBaselineV3;
+              let timerReinstalled=false;
 
-              if(!topForm.__oneClickTimerBaselineV2
+              if(!timerBindingHealthy(previousTiming)
                 &&typeof topForm.TopFrame_ontimer==='function'
                 &&typeof topForm.fnResetUseEndCeckTimer==='function'
                 &&typeof topForm.removeEventHandler==='function'
                 &&typeof topForm.addEventHandler==='function'){
-                const originalTimer=topForm.TopFrame_ontimer;
-                const originalReset=topForm.fnResetUseEndCeckTimer;
-                const timing={lastTick:null,resetAt:null};
+                const directTimers=[...new Set([
+                  ...(eventHandlers()||[]).filter(h=>h.target===topForm&&officialExpiryTimer(h.handler)).map(h=>h.handler),
+                  ...(officialExpiryTimer(topForm.TopFrame_ontimer)?[topForm.TopFrame_ontimer]:[])
+                ])];
+                const originalTimer=directTimers.length===1?directTimers[0]
+                  :topForm.TopFrame_ontimer===previousTiming?.timerWrapper
+                    ?previousTiming.originalTimer:topForm.TopFrame_ontimer;
+                const originalReset=topForm.fnResetUseEndCeckTimer===previousTiming?.resetWrapper
+                  ?previousTiming.originalReset:topForm.fnResetUseEndCeckTimer;
+                const timing={revision:2,resetAt:null,resetRemaining:null,ready:false,
+                  originalTimer,originalReset,lastTickAt:0,lastResetAt:0,tickCount:0,correctionCount:0,
+                  lastRawRemaining:null,lastExpectedRemaining:null};
+                const counterDescriptor=()=>Object.getOwnPropertyDescriptor(topForm,'fv_nowUseEndTime');
+                const legacyTiming=previousTiming||topForm.__oneClickTimerBaselineV2;
+                const legacyCounter=counterDescriptor();
+                // A V2 reset with no subsequent official tick still owns the full
+                // counter value. Carry it over before a cached Y can be reported.
+                if(supportedUseTime(legacyCounter)&&legacyCounter.value>0
+                  &&typeof legacyTiming?.resetAt==='number'&&Number.isFinite(legacyTiming.resetAt)
+                  &&legacyTiming.resetAt>0&&legacyTiming.resetAt<=Math.round(now/1000)){
+                  timing.resetAt=legacyTiming.resetAt;
+                  timing.resetRemaining=legacyCounter.value;
+                }
                 const timer=function(obj,event){
-                  if(event.timerid!==this.fv_useEndCeckTimerId)
+                  // Match the official Nexacro handler, including numeric string IDs.
+                  if(event.timerid!=this.fv_useEndCeckTimerId)
                     return originalTimer.apply(this,arguments);
                   const nowSeconds=Math.round(Date.now()/1000);
-                  // The official handler subtracts time since its previous tick,
-                  // including time before a confirmed reset while the tab was hidden.
-                  if(timing.lastTick!==null&&timing.resetAt>timing.lastTick){
-                    this.fv_nowUseEndTime+=Math.max(0,
-                      Math.min(timing.resetAt,nowSeconds)-timing.lastTick);
+                  const descriptor=counterDescriptor();
+                  timing.ready=supportedUseTime(descriptor);
+                  timing.tickCount++;
+                  timing.lastTickAt=Date.now();
+                  let restore=null;
+                  if(timing.resetAt!==null&&timing.resetRemaining>0
+                    &&supportedUseTime(descriptor)&&descriptor.value>0){
+                    const remaining=Math.max(0,Math.min(descriptor.value,
+                      timing.resetRemaining-Math.max(0,nowSeconds-timing.resetAt)));
+                    // The first official tick may precede every observed tick. Its private
+                    // previous timestamp is unknown, so replace only its first subtraction
+                    // with elapsed time since the confirmed reset. The official handler
+                    // still updates that timestamp, renders the time and handles expiry.
+                    let value=descriptor.value;
+                    restore=()=>Object.defineProperty(this,'fv_nowUseEndTime',{...descriptor,value});
+                    Object.defineProperty(this,'fv_nowUseEndTime',{
+                      configurable:true,enumerable:descriptor.enumerable,
+                      get:()=>value,
+                      set:next=>{
+                        timing.lastRawRemaining=typeof next==='number'&&Number.isFinite(next)?next:null;
+                        timing.lastExpectedRemaining=remaining;
+                        if(typeof next==='number'&&Number.isFinite(next)&&next!==remaining){
+                          timing.correctionCount++;
+                          if(next<=0&&remaining>0)diagnostic('STALE_TIMER_SUBTRACTION',next);
+                        }
+                        value=typeof next==='number'&&Number.isFinite(next)?remaining:next;
+                        restore();restore=null;
+                      }
+                    });
                   }
+                  // A page connected by an older app may still have its V2 wrapper.
+                  // Once V3 owns a reset, V2 must not compensate the same interval.
+                  if(timing.resetAt!==null&&topForm.__oneClickTimerBaselineV2)
+                    topForm.__oneClickTimerBaselineV2.resetAt=null;
+                  if(timing.resetAt!==null&&previousTiming)previousTiming.resetAt=null;
                   try{return originalTimer.apply(this,arguments);}
-                  finally{timing.lastTick=nowSeconds;timing.resetAt=null;}
+                  finally{
+                    if(restore)restore();
+                    if(this.fv_nowUseEndTime<=0)diagnostic('OFFICIAL_TIMER_ZERO',this.fv_nowUseEndTime);
+                    timing.resetAt=null;timing.resetRemaining=null;
+                  }
                 };
-                const removed=topForm.removeEventHandler('ontimer',originalTimer,topForm);
-                if(removed>=0){
-                  topForm.addEventHandler('ontimer',timer,topForm);
-                  topForm.TopFrame_ontimer=timer;
-                  topForm.fnResetUseEndCeckTimer=function(){
-                    const result=originalReset.apply(this,arguments);
-                    timing.resetAt=Math.round(Date.now()/1000);
-                    return result;
-                  };
-                  topForm.__oneClickTimerBaselineV2=timing;
+                if(supportedUseTime(counterDescriptor())&&directTimers.length<=1){
+                  const handlers=eventHandlers();
+                  const known=new Set([topForm.TopFrame_ontimer,originalTimer,previousTiming?.timerWrapper,
+                    previousTiming?.originalTimer,...directTimers].filter(fn=>typeof fn==='function'));
+                  const toRemove=handlers?handlers.filter(h=>h.target===topForm&&known.has(h.handler))
+                    .map(h=>h.handler):[topForm.TopFrame_ontimer];
+                  const removed=[];
+                  let removalComplete=true;
+                  for(const fn of toRemove){
+                    try{if(topForm.removeEventHandler('ontimer',fn,topForm)>=0)removed.push(fn);
+                      else{removalComplete=false;break;} }
+                    catch{removalComplete=false;break;}
+                  }
+                  if(removalComplete){
+                    let added=-1;
+                    try{added=topForm.addEventHandler('ontimer',timer,topForm);}catch{}
+                    const bound=eventHandlers();
+                    if(added>=0&&(!bound||(bound.filter(h=>h.handler===timer&&h.target===topForm).length===1
+                      &&!bound.some(h=>h.target===topForm&&known.has(h.handler))))){
+                      topForm.TopFrame_ontimer=timer;
+                      topForm.fnResetUseEndCeckTimer=function(){
+                        const result=originalReset.apply(this,arguments);
+                        const descriptor=counterDescriptor();
+                        timing.ready=supportedUseTime(descriptor);
+                        timing.resetAt=timing.ready?Math.round(Date.now()/1000):null;
+                        timing.resetRemaining=timing.ready?descriptor.value:null;
+                        timing.lastResetAt=Date.now();
+                        return result;
+                      };
+                      timing.timerWrapper=timer;
+                      timing.resetWrapper=topForm.fnResetUseEndCeckTimer;
+                      timing.ready=true;
+                      topForm.__oneClickTimerBaselineV3=timing;
+                      timerReinstalled=!!previousTiming;
+                      diagnostic(previousTiming?'TIMER_BINDING_REPAIRED':'TIMER_BINDING_INSTALLED');
+                    }else{
+                      try{topForm.removeEventHandler('ontimer',timer,topForm);}catch{}
+                      for(const fn of removed)try{topForm.addEventHandler('ontimer',fn,topForm);}catch{}
+                      if(previousTiming)previousTiming.ready=false;
+                      diagnostic('TIMER_BINDING_FAILED');
+                    }
+                  }else{
+                    for(const fn of removed)try{topForm.addEventHandler('ontimer',fn,topForm);}catch{}
+                    if(previousTiming)previousTiming.ready=false;
+                    diagnostic('TIMER_BINDING_FAILED');
+                  }
+                }else if(previousTiming){
+                  previousTiming.ready=false;
+                  diagnostic('TIMER_BINDING_FAILED');
                 }
               }
 
-              if(!topForm.__oneClickGfnCallbackWrappedV4&&typeof topForm._gfnCallback==='function'){
-                const originalGfnCallback=topForm._gfnCallback;
+              const previousPolicy=topForm.__oneClickSessionPolicyV7;
+              let originalGfnCallback=previousPolicy?.originalGfnCallback;
+              let sessionReinstalled=false;
+              if(topForm._gfnCallback!==previousPolicy?.gfnCallbackWrapper&&typeof topForm._gfnCallback==='function'){
+                originalGfnCallback=topForm._gfnCallback;
                 topForm.__oneClickGfnCallbackWrappedV4=true;
                 topForm._gfnCallback=function(svcID,...rest){
                   let metadata=null;
@@ -1016,13 +1159,22 @@ internal sealed partial class PortalWorkflowController
                 };
               }
 
-              // Keep V4 request ownership/state so an already-running request is not duplicated.
-              // Reinstall only the callback policy on pages that still have the old V4 wrapper.
-              if(!topForm.__oneClickSessionWrappedV5){
-                const originalSessionCheck=topForm.__oneClickOriginalSessionCheckV1||topForm.fnSessionCheck;
+              // Marker properties can survive a site script reload. Verify the actual
+              // functions before trusting either the request state or a cached success.
+              if(topForm.fnSessionCheck!==previousPolicy?.sessionCheckWrapper
+                ||topForm.fnCallback!==previousPolicy?.callbackWrapper
+                ||topForm._gfnCallback!==previousPolicy?.gfnCallbackWrapper){
+                const oldCheck=topForm.fnSessionCheck;
+                const oldCheckIsWrapper=oldCheck===previousPolicy?.sessionCheckWrapper
+                  ||(topForm.__oneClickOriginalSessionCheckV1&&/ownershipTagged/.test(String(oldCheck)));
+                const originalSessionCheck=oldCheckIsWrapper
+                  ?previousPolicy?.originalSessionCheck||topForm.__oneClickOriginalSessionCheckV1:oldCheck;
                 const previousCallback=topForm.fnCallback;
-                const originalCallback=topForm.__oneClickOriginalCallbackV1||previousCallback;
-                topForm.__oneClickSessionWrappedV5=true;
+                const oldCallbackIsWrapper=previousCallback===previousPolicy?.callbackWrapper
+                  ||(topForm.__oneClickOriginalCallbackV1&&/callbackContext/.test(String(previousCallback)));
+                const originalCallback=oldCallbackIsWrapper
+                  ?previousPolicy?.originalCallback||topForm.__oneClickOriginalCallbackV1:previousCallback;
+                topForm.__oneClickSessionWrappedV7=true;
                 topForm.__oneClickOriginalSessionCheckV1=originalSessionCheck;
                 topForm.__oneClickOriginalCallbackV1=originalCallback;
 
@@ -1037,10 +1189,12 @@ internal sealed partial class PortalWorkflowController
                   shared.reported=false;
                   shared.recoveryRequired=false;
                   shared.activeRequestId=requestId;
+                  diagnostic('REQUEST_START');
                   let ownershipTagged=false;
                   const transaction=this.transaction;
                   const hadOwnTransaction=Object.prototype.hasOwnProperty.call(this,'transaction');
-                  const canCarryOwnership=topForm.__oneClickGfnCallbackWrappedV4===true;
+                  const canCarryOwnership=typeof topForm._gfnCallback==='function'
+                    &&topForm._gfnCallback===topForm.__oneClickSessionPolicyV7?.gfnCallbackWrapper;
                   if(canCarryOwnership&&typeof transaction==='function'){
                     this.transaction=function(...transactionArgs){
                       if(!ownershipTagged){
@@ -1105,14 +1259,23 @@ internal sealed partial class PortalWorkflowController
                         else{
                           try{
                             this.fnResetUseEndCeckTimer();
-                            shared.result=hasPositiveUseTime(this)?'Y':'Y_RESET_UNCONFIRMED';
+                            shared.result=!hasPositiveUseTime(this)?'Y_RESET_UNCONFIRMED'
+                              :this.__oneClickTimerBaselineV3?.ready&&timerBindingHealthy(this.__oneClickTimerBaselineV3)
+                                &&supportedUseTime(Object.getOwnPropertyDescriptor(this,'fv_nowUseEndTime'))
+                                  ?'Y':'Y_TIMER_UNAVAILABLE';
                           }catch{shared.result='Y_RESET_FAILED';}
                         }
                       }else if(Number(errorCode)===0){
+                        if(this.__oneClickTimerBaselineV3){
+                          this.__oneClickTimerBaselineV3.resetAt=null;
+                          this.__oneClickTimerBaselineV3.resetRemaining=null;
+                        }
+                        if(this.__oneClickTimerBaselineV2)this.__oneClickTimerBaselineV2.resetAt=null;
                         shared.result='N';
                       }else{
                         shared.result='ERROR_'+String(errorCode??'UNKNOWN');
                       }
+                      diagnostic(shared.result==='Y'?'RESPONSE_Y':shared.result==='N'?'RESPONSE_N':'RESPONSE_ERROR');
                     }
                     return originalCallback.apply(this,arguments);
                   }
@@ -1121,6 +1284,11 @@ internal sealed partial class PortalWorkflowController
                   }
                   return originalCallback.apply(this,arguments);
                 };
+                topForm.__oneClickSessionPolicyV7={originalSessionCheck,originalCallback,originalGfnCallback,
+                  sessionCheckWrapper:topForm.fnSessionCheck,callbackWrapper:topForm.fnCallback,
+                  gfnCallbackWrapper:topForm._gfnCallback};
+                sessionReinstalled=!!previousPolicy;
+                if(sessionReinstalled)diagnostic('SESSION_BINDING_REPAIRED');
               }
 
               const legacyV3=globalThis[legacyV3StateKey];
@@ -1179,9 +1347,13 @@ internal sealed partial class PortalWorkflowController
               if(state.completedAt&&state.result){
                 if(state.result==='N')return 'N';
                 if(state.result==='Y'){
+                  if(!topForm.__oneClickTimerBaselineV3?.ready||!timerBindingHealthy(topForm.__oneClickTimerBaselineV3)
+                    ||!supportedUseTime(Object.getOwnPropertyDescriptor(topForm,'fv_nowUseEndTime')))
+                    return 'Y_TIMER_UNAVAILABLE';
                   // A zero display requires a new official check, never an old cached Y.
                   // First observation of an old callback must obey the same freshness limit.
-                  if(!forceCheck&&now-state.completedAt<successIntervalMs&&hasPositiveUseTime(topForm)){
+                  if(!forceCheck&&!timerReinstalled&&!sessionReinstalled
+                    &&now-state.completedAt<successIntervalMs&&hasPositiveUseTime(topForm)){
                     if(!state.reported){state.reported=true;return 'Y';}
                     return 'Y_RECENT';
                   }
@@ -1192,8 +1364,13 @@ internal sealed partial class PortalWorkflowController
               }
 
               try{
+                const previousSequence=state.requestSequence;
                 topForm.fnSessionCheck();
                 const current=getState();
+                if(current.requestSequence<=previousSequence){
+                  diagnostic('REQUEST_NOT_TRACKED');
+                  return 'REQUEST_NOT_TRACKED';
+                }
                 return current.inFlight?'STARTED':(current.result||'REQUEST_EXCEPTION');
               }catch{
                 return getState().result||'REQUEST_EXCEPTION';
@@ -1413,6 +1590,10 @@ internal sealed partial class PortalWorkflowController
         DevToolsSession session,
         CancellationToken cancellationToken)
     {
+        // A tab can belong to a different browser window from the connected portal.
+        // Restore that target's window before requesting foreground activation.
+        await session.ActivateTargetAsync(cancellationToken);
+        await session.MaximizeTargetWindowAsync(cancellationToken);
         await session.BringToFrontAsync(cancellationToken);
     }
 
@@ -1744,7 +1925,7 @@ internal sealed partial class PortalWorkflowController
         {
             throw new PortalSessionExpiredException(
                 "나이스",
-                "나이스가 로그아웃되었습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
+                "나이스가 로그아웃되었습니다. 브라우저에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
         }
 
         if (!await TryCloseVisibleNiceSecurityShutdownDialogAsync(session, cancellationToken))
@@ -1754,7 +1935,7 @@ internal sealed partial class PortalWorkflowController
 
         throw new PortalSessionExpiredException(
             "나이스",
-            "나이스 세션이 정보보호 정책에 따라 종료되었습니다. Edge에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
+            "나이스 세션이 정보보호 정책에 따라 종료되었습니다. 브라우저에서 나이스에 다시 로그인한 뒤 연결해 주세요.");
     }
 
     private static async Task<bool> TryCloseVisibleNiceSecurityShutdownDialogAsync(

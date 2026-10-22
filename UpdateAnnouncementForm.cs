@@ -30,7 +30,7 @@ internal sealed class UpdateAnnouncementForm : Form
 
         Controls.Add(new Label
         {
-            Text = $"새로운 업데이트 · v{UpdateAnnouncement.CurrentVersion}",
+            Text = $"새로운 업데이트 · v{UpdateAnnouncement.AnnouncementVersion}",
             Location = new Point(24, 22),
             AutoSize = true,
             ForeColor = Color.FromArgb(49, 124, 213),

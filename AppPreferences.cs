@@ -27,6 +27,21 @@ internal static class AppPreferences
     private const string DisplayModeValueName = "DisplayMode";
     private const string LastAcknowledgedUpdateVersionValueName = "LastAcknowledgedUpdateVersion";
     private const string NotificationPopupsValueName = "NotificationPopups";
+    private const string LoginBrowserValueName = "LoginBrowser";
+
+    public static PortalBrowser GetLoginBrowser()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(SettingsKeyPath, writable: false);
+        return key?.GetValue(LoginBrowserValueName) is string value && value == nameof(PortalBrowser.Chrome)
+            ? PortalBrowser.Chrome : PortalBrowser.Edge;
+    }
+
+    public static void SetLoginBrowser(PortalBrowser browser)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(SettingsKeyPath, writable: true)
+            ?? throw new InvalidOperationException("로그인 브라우저 설정을 저장하지 못했습니다.");
+        key.SetValue(LoginBrowserValueName, browser.ToString(), RegistryValueKind.String);
+    }
 
     public static bool AreNotificationPopupsEnabled()
     {

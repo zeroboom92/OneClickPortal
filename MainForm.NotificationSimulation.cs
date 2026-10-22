@@ -55,11 +55,14 @@ public sealed partial class MainForm
     private async Task TryConnectStudentNotificationPreviewAsync()
     {
         // Automatic connection is limited to one unambiguous official Nice page and
-        // one existing Edge window. Login and certificate choices remain with the user.
+        // one matching browser window. Login and certificate choices remain with the user.
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(12));
         var office = EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode());
-        var port = await DevToolsDiscovery.FindPortalPortAsync(office, cancellation.Token);
+        var browser = AppPreferences.GetLoginBrowser();
+        var port = (await DevToolsDiscovery.InspectPortalPortsAsync(office, browser, cancellation.Token)).Port;
         if (port is null) return;
+        var owner = BrowserEndpointOwner.FindListeningProcessId(port.Value);
+        if (owner is null) return;
         var targets = await DevToolsDiscovery.GetTargetsAsync(port.Value, cancellation.Token);
         if (targets.Count(target => target.Type == "page"
             && Uri.TryCreate(target.Url, UriKind.Absolute, out var uri)
@@ -68,7 +71,8 @@ public sealed partial class MainForm
 
         RefreshBrowserWindows();
         var candidates = _browserWindows.Items.Cast<BrowserWindowItem>()
-            .Where(window => string.Equals(window.ProcessName, "msedge", StringComparison.OrdinalIgnoreCase)
+            .Where(window => string.Equals(window.ProcessName, BrowserSupport.GetProcessName(browser), StringComparison.OrdinalIgnoreCase)
+                && IsWindowOwnedBy(window.Handle, owner.Value)
                 && (window.Title.Contains("나이스", StringComparison.Ordinal)
                     || window.Title.Contains("업무포털", StringComparison.Ordinal)
                     || window.Title.Contains("에듀파인", StringComparison.Ordinal)))

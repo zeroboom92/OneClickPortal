@@ -23,6 +23,19 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build and run regression checks
+        shell: pwsh
+        run: |
+          dotnet build .\BrowserThumbnailPrototype.csproj --configuration Debug
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test --test-concurrency=1 tests/*.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Read version from tag
         id: version
         shell: pwsh

@@ -4,15 +4,16 @@ namespace BrowserThumbnailPrototype;
 
 internal static class UpdateAnnouncement
 {
-    // Keep the current history entry, release notes and native preview aligned.
+    // Maintenance releases keep the existing announcement and its saved choice.
     public static string Title => UpdateHistory.Current.Title;
     public static string Summary => UpdateHistory.Current.Summary;
+    public static string AnnouncementVersion => UpdateHistory.Current.Version;
     public static string CurrentVersion => typeof(UpdateAnnouncement).Assembly
         .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+', 2)[0]
-        ?? typeof(UpdateAnnouncement).Assembly.GetName().Version?.ToString(3) ?? "1.4.0";
+        ?? typeof(UpdateAnnouncement).Assembly.GetName().Version?.ToString(3) ?? "1.4.1";
 
     public static bool ShouldShow(string? acknowledgedVersion) =>
-        !string.Equals(acknowledgedVersion, CurrentVersion, StringComparison.Ordinal);
+        !string.Equals(acknowledgedVersion, AnnouncementVersion, StringComparison.Ordinal);
 
     // Manual replays can change the user's choice; previews never change saved preferences.
     public static bool Show(Form owner, bool force = false, bool showSettingsButton = true, bool preview = false)
@@ -32,7 +33,7 @@ internal static class UpdateAnnouncement
             {
                 try
                 {
-                    AppPreferences.SetLastAcknowledgedUpdateVersion(dialog.DoNotShowAgain ? CurrentVersion : null);
+                    AppPreferences.SetLastAcknowledgedUpdateVersion(dialog.DoNotShowAgain ? AnnouncementVersion : null);
                 }
                 catch (Exception exception)
                 {

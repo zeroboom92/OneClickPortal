@@ -49,6 +49,11 @@ internal static class DevToolsDiscovery
             (port, token) => ProbePortAsync(port, educationOffice, token), cancellationToken);
     }
 
+    public static Task<DevToolsDiscoveryResult> InspectPortalPortsAsync(
+        EducationOffice educationOffice, PortalBrowser browser, CancellationToken cancellationToken = default) =>
+        InspectPortalPortsAsync(educationOffice,
+            (port, token) => ProbePortAsync(port, educationOffice, token, browser), cancellationToken);
+
     internal static async Task<DevToolsDiscoveryResult> InspectPortalPortsAsync(
         EducationOffice office,
         Func<int, CancellationToken, Task<DevToolsPortProbe>> probe,
@@ -58,19 +63,25 @@ internal static class DevToolsDiscovery
         var results = await Task.WhenAll(Enumerable.Range(DefaultPort, PortProbeCount)
             .Select(port => probe(port, cancellationToken)));
         cancellationToken.ThrowIfCancellationRequested();
-        var port = results.Where(result => result.Status == DevToolsProbeStatus.Ready)
-            .Select(result => (int?)result.Port).Min();
-        return new DevToolsDiscoveryResult(port, results);
+        var ready = results.Where(result => result.Status == DevToolsProbeStatus.Ready).ToArray();
+        if (ready.Length > 1)
+            return new DevToolsDiscoveryResult(null, results.Select(result => result.Status == DevToolsProbeStatus.Ready
+                ? result with { Status = DevToolsProbeStatus.Ambiguous } : result).ToArray());
+        return new DevToolsDiscoveryResult(ready.Length == 1 ? ready[0].Port : null, results);
     }
 
     internal static async Task<DevToolsPortProbe> ProbePortAsync(
         int port,
         EducationOffice educationOffice,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, PortalBrowser? browser = null)
     {
         try
         {
-            await GetBrowserWebSocketUriAsync(port, cancellationToken);
+            var version = await ReadBrowserVersionAsync(port, cancellationToken);
+            ParseBrowserWebSocketUri(version, port);
+            if (browser is not null && (!version.TryGetProperty("Browser", out var product)
+                || product.ValueKind != JsonValueKind.String || !BrowserSupport.MatchesProduct(browser.Value, product.GetString())))
+                return new DevToolsPortProbe(port, DevToolsProbeStatus.BrowserMismatch, Array.Empty<string>());
             var targets = await GetTargetsAsync(port, cancellationToken);
             var codes = EducationOfficeCatalog.All
                 .Where(office => targets.Any(target => IsPortalRelatedTarget(target, office)))
@@ -103,10 +114,20 @@ internal static class DevToolsDiscovery
 
     public static async Task<Uri> GetBrowserWebSocketUriAsync(int port, CancellationToken cancellationToken = default)
     {
+        return ParseBrowserWebSocketUri(await ReadBrowserVersionAsync(port, cancellationToken), port);
+    }
+
+    private static async Task<JsonElement> ReadBrowserVersionAsync(int port, CancellationToken cancellationToken)
+    {
         await using var stream = await HttpClient.GetStreamAsync($"http://127.0.0.1:{port}/json/version", cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        if (document.RootElement.ValueKind != JsonValueKind.Object
-            || !document.RootElement.TryGetProperty("webSocketDebuggerUrl", out var value)
+        return document.RootElement.Clone();
+    }
+
+    private static Uri ParseBrowserWebSocketUri(JsonElement version, int port)
+    {
+        if (version.ValueKind != JsonValueKind.Object
+            || !version.TryGetProperty("webSocketDebuggerUrl", out var value)
             || value.ValueKind != JsonValueKind.String
             || !Uri.TryCreate(value.GetString(), UriKind.Absolute, out var uri)
             || uri.Scheme != "ws" || uri.Port != port
@@ -129,7 +150,7 @@ internal static class DevToolsDiscovery
     }
 }
 
-internal enum DevToolsProbeStatus { Ready, NoPortalTarget, Unreachable, InvalidResponse }
+internal enum DevToolsProbeStatus { Ready, NoPortalTarget, Unreachable, InvalidResponse, BrowserMismatch, Ambiguous, WindowMismatch }
 internal sealed record DevToolsPortProbe(int Port, DevToolsProbeStatus Status,
     IReadOnlyList<string> OfficeCodes, string? FailureKind = null);
 internal sealed record DevToolsDiscoveryResult(int? Port, IReadOnlyList<DevToolsPortProbe> Probes);
@@ -355,13 +376,37 @@ internal sealed class DevToolsSession : IAsyncDisposable
                 "Browser.setWindowBounds",
                 new { windowId, bounds = new { windowState = "normal" } },
                 cancellationToken);
-            await Task.Delay(100, cancellationToken);
+            // Leaving fullscreen (or restoring a minimized maximized window) can
+            // restore its previous maximized state without passing through normal.
+            var restoredState = await WaitForWindowStateAsync(windowId, "normal", cancellationToken,
+                allowMaximized: true);
+            if (string.Equals(restoredState, "maximized", StringComparison.OrdinalIgnoreCase)) return;
         }
 
         await ExecuteRootCommandAsync(
             "Browser.setWindowBounds",
             new { windowId, bounds = new { windowState = "maximized" } },
             cancellationToken);
+        await WaitForWindowStateAsync(windowId, "maximized", cancellationToken);
+    }
+
+    private async Task<string> WaitForWindowStateAsync(int windowId, string expectedState,
+        CancellationToken cancellationToken, bool allowMaximized = false)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var info = await ExecuteRootCommandAsync(
+                "Browser.getWindowBounds", new { windowId }, cancellationToken);
+            var state = info.GetProperty("bounds").GetProperty("windowState").GetString();
+            if (string.Equals(state, expectedState, StringComparison.OrdinalIgnoreCase)
+                || (allowMaximized && string.Equals(state, "maximized", StringComparison.OrdinalIgnoreCase)))
+                return state!;
+            if (DateTime.UtcNow >= deadline)
+                throw new TimeoutException("브라우저 창의 복원·최대화를 확인하지 못했습니다. 다시 눌러 주세요.");
+            await Task.Delay(50, cancellationToken);
+        }
     }
 
     public async Task ClickAsync(double x, double y, CancellationToken cancellationToken = default)

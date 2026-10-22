@@ -43,13 +43,15 @@ test('three real navigation dispatches are behind connection and session checks'
   ]) assert.match(handler, new RegExp(`kind == NotificationKind\\.${kind}\\) _ = RunWorkflowAsync\\(PortalTaskKind\\.${task}\\)`));
 });
 
-test('automatic preview connection requires a unique official HTTPS page and unique existing Edge window', () => {
+test('automatic preview connection requires a unique official HTTPS page and matching existing browser window', () => {
   const connection = simulation.split('private async Task TryConnectStudentNotificationPreviewAsync()')[1];
   assert.match(connection, /target\.Type == "page"/);
   assert.match(connection, /uri\.Scheme == Uri\.UriSchemeHttps/);
   assert.match(connection, /string\.Equals\(uri\.Host, office\.NiceDomain, StringComparison\.OrdinalIgnoreCase\)/);
   assert.match(connection, /\) != 1\) return;/);
-  assert.match(connection, /string\.Equals\(window\.ProcessName, "msedge", StringComparison\.OrdinalIgnoreCase\)/);
+  assert.match(connection, /string\.Equals\(window\.ProcessName, BrowserSupport.GetProcessName\(browser\), StringComparison\.OrdinalIgnoreCase\)/);
+  assert.match(connection, /IsWindowOwnedBy\(window.Handle, owner.Value\)/);
+  assert.match(connection, /InspectPortalPortsAsync\(office, browser, cancellation.Token\)/);
   assert.match(connection, /if \(candidates\.Length != 1\) return;/);
   assert.match(connection, /await ConnectSelectedBrowserAsync\(\)/);
   assert.doesNotMatch(connection.replace(/\/\/[^\n]*/g, ''),

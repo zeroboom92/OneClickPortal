@@ -7,6 +7,7 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _usageTelemetryCheckBox = new();
     private readonly CheckBox _alwaysOnTopCheckBox = new();
     private readonly ComboBox _educationOfficeComboBox = new();
+    private readonly ComboBox _loginBrowserComboBox = new();
     private readonly RadioButton _topDockRadioButton = new();
     private readonly RadioButton _floatingWindowRadioButton = new();
     private readonly DisplayModePreview _topDockPreview = new(PortalDisplayMode.TopDock);
@@ -23,7 +24,8 @@ internal sealed class SettingsForm : Form
         bool alwaysOnTopEnabled,
         string educationOfficeCode,
         int windowOpacityPercent,
-        PortalDisplayMode displayMode)
+        PortalDisplayMode displayMode,
+        PortalBrowser loginBrowser = PortalBrowser.Edge)
     {
         Text = "설정";
         StartPosition = FormStartPosition.CenterScreen;
@@ -84,6 +86,22 @@ internal sealed class SettingsForm : Form
         }
         _educationOfficeComboBox.SelectedItem = EducationOfficeCatalog.GetByCode(educationOfficeCode);
         optionsPanel.Controls.Add(_educationOfficeComboBox);
+
+        var loginBrowserLabel = new Label
+        {
+            Text = "로그인 브라우저",
+            AutoSize = true,
+            Location = new Point(16, 49),
+            BackColor = Color.Transparent,
+        };
+        optionsPanel.Controls.Add(loginBrowserLabel);
+        _loginBrowserComboBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        _loginBrowserComboBox.AccessibleName = "로그인 브라우저";
+        _loginBrowserComboBox.Location = new Point(130, 45);
+        _loginBrowserComboBox.Size = new Size(206, 25);
+        _loginBrowserComboBox.Items.AddRange(new object[] { "Edge", "Chrome" });
+        _loginBrowserComboBox.SelectedIndex = loginBrowser == PortalBrowser.Chrome ? 1 : 0;
+        optionsPanel.Controls.Add(_loginBrowserComboBox);
 
         var displayModeLabel = new Label
         {
@@ -159,6 +177,12 @@ internal sealed class SettingsForm : Form
         _alwaysOnTopCheckBox.ForeColor = Color.FromArgb(45, 52, 64);
         _alwaysOnTopCheckBox.BackColor = Color.Transparent;
         optionsPanel.Controls.Add(_alwaysOnTopCheckBox);
+
+        // Leave room for the browser selector while keeping the established layout below it.
+        foreach (Control control in optionsPanel.Controls)
+            if (control != loginBrowserLabel && control != _loginBrowserComboBox && control.Top >= 49)
+                control.Top += 36;
+        optionsPanel.Height += 36;
 
         var opacityTitle = new Label
         {
@@ -247,6 +271,10 @@ internal sealed class SettingsForm : Form
         saveButton.DialogResult = DialogResult.OK;
         Controls.Add(saveButton);
 
+        foreach (Control control in Controls)
+            if (control.Top >= 440) control.Top += 36;
+        ClientSize = new Size(ClientSize.Width, ClientSize.Height + 36);
+
         AcceptButton = saveButton;
         CancelButton = cancelButton;
         UpdateDisplayModeSelection();
@@ -262,6 +290,8 @@ internal sealed class SettingsForm : Form
     public bool UsageTelemetryEnabled => _usageTelemetryCheckBox.Checked;
 
     public bool AlwaysOnTopEnabled => _alwaysOnTopCheckBox.Checked;
+
+    public PortalBrowser LoginBrowser => _loginBrowserComboBox.SelectedIndex == 1 ? PortalBrowser.Chrome : PortalBrowser.Edge;
 
     public PortalDisplayMode DisplayMode => _floatingWindowRadioButton.Checked
         ? PortalDisplayMode.FloatingWindow : PortalDisplayMode.TopDock;

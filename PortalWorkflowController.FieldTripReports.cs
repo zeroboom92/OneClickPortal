@@ -91,6 +91,7 @@ internal sealed partial class PortalWorkflowController
                 _ => "교외체험학습보고서관리 화면으로 이동하지 못했습니다. 나이스 연결 상태를 확인해 주세요.",
             });
         await QueryStudentManagementAsync(PortalTaskKind.FieldTripReportManagement, cancellationToken);
+        await PrepareBrowserForUserAsync(session, cancellationToken);
         return new WorkflowResult("교외체험학습보고서관리 조회가 완료되었습니다. 최종 상신은 직접 진행합니다.",
             KeepActivatedBrowser: true);
     }

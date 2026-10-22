@@ -20,6 +20,7 @@ test('actual DevTools discovery handles local HTTP failures without touching run
         <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
         <ItemGroup>
           <Compile Include="${xml(resolve(root, 'DevToolsAutomation.cs'))}" Link="DevToolsAutomation.cs" />
+          <Compile Include="${xml(resolve(root, 'BrowserSupport.cs'))}" Link="BrowserSupport.cs" />
           <Compile Include="${xml(resolve(root, 'EducationOffice.cs'))}" Link="EducationOffice.cs" />
         </ItemGroup>
       </Project>`);
@@ -38,7 +39,8 @@ test('actual DevTools discovery handles local HTTP failures without touching run
         ['redirect', 'does not follow a local endpoint redirect'],
         ['socket-validation', 'accepts only matching local browser WebSocket addresses'],
         ['proxy', 'bypasses an environment proxy for both local discovery requests'],
-        ['port-isolation', 'keeps all probe failures and chooses the first ready port deterministically'],
+        ['browser-separation', 'matches the selected Edge or Chrome browser before inspecting targets'],
+        ['port-isolation', 'keeps all probe failures and refuses ambiguous ready ports'],
         ['cancellation', 'propagates user cancellation through HTTP and aggregate discovery'],
       ];
       for (const [scenario, name] of cases) {
@@ -71,7 +73,7 @@ var selected = EducationOfficeCatalog.GetByCode("goe");
 void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
 string Targets(params DevToolsTarget[] targets) => JsonSerializer.Serialize(targets);
 DevToolsTarget Target(string url, string type = "page") => new("target-id", type, "fixture", url);
-string Version(string socket) => JsonSerializer.Serialize(new { Browser = "Edg/155.0", webSocketDebuggerUrl = socket });
+string Version(string socket, string browser = "Edg/155.0") => JsonSerializer.Serialize(new { Browser = browser, webSocketDebuggerUrl = socket });
 string LocalSocket(FakeEndpoint server) => $"ws://127.0.0.1:{server.Port}/devtools/browser/fixture-id";
 void SetNormal(FakeEndpoint server, string targets)
 {
@@ -252,13 +254,46 @@ switch (scenario)
             return new(port, status, status == DevToolsProbeStatus.Ready ? new[] { selected.Code } : Array.Empty<string>());
         }
         var discovery = await DevToolsDiscovery.InspectPortalPortsAsync(selected, Probe);
-        Check(discovery.Port == 9223, "Completion ordering changed the selected port.");
+        Check(discovery.Port is null, "Multiple ready channels were silently guessed.");
+        Check(discovery.Probes.Where(p => p.Port is 9223 or 9227).All(p => p.Status == DevToolsProbeStatus.Ambiguous),
+            "Ambiguous ready channels did not preserve their diagnosis.");
         Check(calls.Order().SequenceEqual(Enumerable.Range(9222, 11)), "The supported port range was not inspected exactly once.");
         Check(discovery.Probes.Count == 11 && discovery.Probes.Any(p => p.Status == DevToolsProbeStatus.InvalidResponse)
             && discovery.Probes.Any(p => p.Status == DevToolsProbeStatus.Unreachable), "Failure diagnostics were discarded.");
         var absent = await DevToolsDiscovery.InspectPortalPortsAsync(selected,
             (port, token) => Task.FromResult(new DevToolsPortProbe(port, DevToolsProbeStatus.Unreachable, Array.Empty<string>())));
         Check(absent.Port is null && absent.Probes.Count == 11, "A missing channel was not reported completely.");
+        var unique = await DevToolsDiscovery.InspectPortalPortsAsync(selected,
+            (port, token) => Task.FromResult(new DevToolsPortProbe(port,
+                port == 9227 ? DevToolsProbeStatus.Ready : DevToolsProbeStatus.Unreachable,
+                port == 9227 ? new[] { selected.Code } : Array.Empty<string>())));
+        Check(unique.Port == 9227 && unique.Probes.Count == 11, "One ready channel was not selected.");
+        break;
+
+    case "browser-separation":
+        await using (var server = new FakeEndpoint())
+        {
+            foreach (var browser in new[] { PortalBrowser.Edge, PortalBrowser.Chrome })
+            {
+                var matching = browser == PortalBrowser.Edge ? "Edg/155.0" : "Chrome/155.0";
+                var other = browser == PortalBrowser.Edge ? "Chrome/155.0" : "Edg/155.0";
+                foreach (var product in new[] { other, "HeadlessChrome/155.0", "Chromium/155.0", "" })
+                {
+                    server.Requests.Clear();
+                    server.Respond = path => FakeEndpoint.Json(path == "/json/version" ? Version(LocalSocket(server), product)
+                        : Targets(Target(selected.PortalUri.AbsoluteUri)));
+                    var mismatch = await DevToolsDiscovery.ProbePortAsync(server.Port, selected, browser: browser);
+                    Check(mismatch.Status == DevToolsProbeStatus.BrowserMismatch, "Wrong browser was not diagnosed: " + product);
+                    Check(server.Requests.SequenceEqual(new[] { "/json/version" }), "Wrong browser targets were inspected.");
+                }
+                server.Respond = path => FakeEndpoint.Json(path == "/json/version" ? Version(LocalSocket(server), matching)
+                    : Targets(Target(selected.PortalUri.AbsoluteUri)));
+                Check((await DevToolsDiscovery.ProbePortAsync(server.Port, selected, browser: browser)).Status == DevToolsProbeStatus.Ready,
+                    "Selected browser was rejected: " + matching);
+                Check((await DevToolsDiscovery.ProbePortAsync(server.Port, selected)).Status == DevToolsProbeStatus.Ready,
+                    "Browser-neutral diagnosis rejected a valid channel.");
+            }
+        }
         break;
 
     case "cancellation":

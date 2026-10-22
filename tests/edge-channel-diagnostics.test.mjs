@@ -11,14 +11,14 @@ const run = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
 const xml = value => value.replaceAll('&', '&amp;').replaceAll('"', '&quot;');
 
-test('Edge channel policy inspection has no registry write or browser termination path', async () => {
+test('browser channel policy inspection has no registry write or browser termination path', async () => {
   const source = await readFile(resolve(root, 'EdgeChannelDiagnostics.cs'), 'utf8');
   assert.doesNotMatch(source, /\.(?:SetValue|CreateSubKey|DeleteValue|DeleteSubKey|DeleteSubKeyTree|Kill)\s*\(/);
   assert.doesNotMatch(source, /writable:\s*true/);
-  assert.match(source, /OpenSubKey\(PolicyKeyPath, writable: false\)/);
+  assert.match(source, /OpenSubKey\(BrowserSupport\.GetPolicyKeyPath\(browser\), writable: false\)/);
 });
 
-test('actual Edge channel failure diagnostics with isolated policy snapshots',
+test('actual Edge and Chrome channel failure diagnostics with isolated policy snapshots',
   { timeout: 120_000 }, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'oneclick-edge-channel-diagnostics-'));
     try {
@@ -28,6 +28,7 @@ test('actual Edge channel failure diagnostics with isolated policy snapshots',
         <ItemGroup>
           <Compile Include="${xml(resolve(root, 'EdgeChannelDiagnostics.cs'))}" Link="EdgeChannelDiagnostics.cs" />
           <Compile Include="${xml(resolve(root, 'EducationOffice.cs'))}" Link="EducationOffice.cs" />
+          <Compile Include="${xml(resolve(root, 'BrowserSupport.cs'))}" Link="BrowserSupport.cs" />
         </ItemGroup>
       </Project>`);
       await writeFile(join(directory, 'Program.cs'), probe);
@@ -48,6 +49,11 @@ test('actual Edge channel failure diagnostics with isolated policy snapshots',
         ['privacy', 'diagnostic logs reject arbitrary office codes, exception text, URLs and secrets'],
         ['policy-read-failure', 'policy read failures remain actionable without aborting diagnostics'],
         ['policy-hints', 'standalone policy hints never diagnose an already discovered channel as absent'],
+        ['chrome-guidance', 'Chrome failure guidance uses only Chrome names and policy pages'],
+        ['chrome-policy', 'Chrome policy snapshots and registry paths stay separate from Edge'],
+        ['browser-mismatch', 'a different browser channel requires the selected browser without claiming login failed'],
+        ['window-mismatch', 'a different window in the same browser requires the dedicated login window'],
+        ['ambiguous', 'multiple browser channels never receive a misleading successful connection diagnosis'],
       ];
       for (const [scenario, name] of cases) {
         await t.test(name, async () => {
@@ -158,6 +164,80 @@ else if (scenario == "policy-hints")
     }) == "", "Permissive policies should add no generic hints.");
     message = Describe(Result(DevToolsProbeStatus.Unreachable));
 }
+else if (scenario == "chrome-guidance")
+{
+    foreach (var status in new[] { DevToolsProbeStatus.Unreachable, DevToolsProbeStatus.InvalidResponse,
+        DevToolsProbeStatus.NoPortalTarget })
+    {
+        message = EdgeChannelDiagnostics.DescribeFailure(office, Result(status),
+            Array.Empty<EdgeChannelPolicySnapshot>(), PortalBrowser.Chrome);
+        Check(message.Contains("Chrome"), "Chrome was omitted from recovery guidance.");
+        Check(!message.Contains("Edge") && !message.Contains("edge://"), "Chrome failure instructed the user to open Edge.");
+    }
+    message = EdgeChannelDiagnostics.DescribeFailure(office, Result(DevToolsProbeStatus.Unreachable),
+        Array.Empty<EdgeChannelPolicySnapshot>(), PortalBrowser.Chrome);
+    Check(message.Contains("Chrome 로그인 성공과 제어 채널 연결은 별도로 확인"), "Chrome login success was confused with channel readiness.");
+    Check(AppLogger.Lines.Any(line => line.Contains("Browser=Chrome")), "Chrome diagnostics were logged without the browser.");
+}
+else if (scenario == "chrome-policy")
+{
+    Check(BrowserSupport.GetPolicyKeyPath(PortalBrowser.Edge) == @"SOFTWARE\Policies\Microsoft\Edge", "Edge policy registry key changed.");
+    Check(BrowserSupport.GetPolicyKeyPath(PortalBrowser.Chrome) == @"SOFTWARE\Policies\Google\Chrome", "Chrome policy registry key is not isolated.");
+    var policies = new[] {
+        new EdgeChannelPolicySnapshot(EdgePolicyScope.LocalMachine, RemoteDebuggingAllowed: 0),
+        new EdgeChannelPolicySnapshot(EdgePolicyScope.CurrentUser, DeveloperToolsAvailability: 2,
+            HasDeveloperToolsAllowlist: true, ReadFailureKind: "UnauthorizedAccessException"),
+    };
+    var hints = EdgeChannelDiagnostics.DescribePolicyHints(policies, PortalBrowser.Chrome);
+    Check(hints.Contains("Chrome 정책") && hints.Contains("chrome://policy"), "Chrome policy help is missing.");
+    Check(hints.Contains("HKLM: RemoteDebuggingAllowed=0") && hints.Contains("HKCU: DeveloperToolsAvailability=2"), "Chrome exact policy observations were lost.");
+    Check(hints.Contains("사이트별 예외") && hints.Contains("일부 Chrome 정책은 읽지 못했습니다"), "Chrome policy qualification or read failure was lost.");
+    Check(!hints.Contains("Edge") && !hints.Contains("edge://"), "Chrome policy help points to Edge.");
+    Check(EdgeChannelDiagnostics.DescribePolicyHints(Array.Empty<EdgeChannelPolicySnapshot>(), PortalBrowser.Chrome) == "", "Absent Chrome policies produced generic restrictions.");
+    message = EdgeChannelDiagnostics.DescribeFailure(office, Result(DevToolsProbeStatus.Unreachable), policies, PortalBrowser.Chrome);
+    Check(AppLogger.Lines.Any(line => line.Contains("PolicyScope=HKLM") && line.Contains("Browser=Chrome")), "Chrome policy log was not identified.");
+}
+else if (scenario == "browser-mismatch")
+{
+    message = EdgeChannelDiagnostics.DescribeFailure(office, Result(DevToolsProbeStatus.BrowserMismatch),
+        Array.Empty<EdgeChannelPolicySnapshot>(), PortalBrowser.Chrome);
+    Check(message.Contains("선택한 Chrome 창과 다른 종류의 브라우저") && message.Contains("브라우저 목록"), "Browser mismatch was described as a channel timeout.");
+    Check(message.Contains("로그인 브라우저에서 Chrome을 선택") && !message.Contains("Edge"), "Browser mismatch recovery selected another browser.");
+    Check(!message.Contains("로컬 브라우저 제어 채널이 응답하지 않습니다"), "A working other-browser channel was declared absent.");
+    Check(AppLogger.Lines.Any(line => line.Contains("Status=BrowserMismatch")), "Browser mismatch status was not retained in logs.");
+}
+else if (scenario == "ambiguous")
+{
+    foreach (var browser in new[] { PortalBrowser.Edge, PortalBrowser.Chrome })
+    {
+        message = EdgeChannelDiagnostics.DescribeFailure(office, Result(DevToolsProbeStatus.Ambiguous, ["goe"]),
+            Array.Empty<EdgeChannelPolicySnapshot>(), browser);
+        Check(message.Contains("제어 채널이 여러 개") && message.Contains("사용하지 않는 전용"), "Ambiguous channels were treated as a wrong-office or timeout failure.");
+        Check(message.Contains(BrowserSupport.GetDisplayName(browser)), "Ambiguous guidance omitted the selected browser.");
+    }
+    message = EdgeChannelDiagnostics.DescribeFailure(office, Result(DevToolsProbeStatus.Ambiguous),
+        Array.Empty<EdgeChannelPolicySnapshot>(), PortalBrowser.Chrome);
+}
+else if (scenario == "window-mismatch")
+{
+    foreach (var browser in new[] { PortalBrowser.Edge, PortalBrowser.Chrome })
+    {
+        var result = new DevToolsDiscoveryResult(null, new[] {
+            new DevToolsPortProbe(9222, DevToolsProbeStatus.WindowMismatch, ["goe"]),
+            new DevToolsPortProbe(9223, DevToolsProbeStatus.NoPortalTarget, []),
+        });
+        message = EdgeChannelDiagnostics.DescribeFailure(office, result,
+            Array.Empty<EdgeChannelPolicySnapshot>(), browser);
+        var name = BrowserSupport.GetDisplayName(browser);
+        Check(message.Contains($"선택한 {name} 창과 업무포털 제어 채널의 창이 다릅니다"), "Window mismatch was described as a channel timeout or wrong office.");
+        Check(message.Contains($"'로그인'으로 연 전용 {name} 창을 선택"), "The dedicated window recovery instruction is missing.");
+        Check(message.Contains($"일반 {name} 창에 로그인하셨다면"), "An ordinary window was not distinguished from the dedicated login window.");
+        Check(!message.Contains("로컬 브라우저 제어 채널이 응답하지 않습니다"), "A different-window endpoint was declared absent.");
+    }
+    message = EdgeChannelDiagnostics.DescribeFailure(office, Result(DevToolsProbeStatus.WindowMismatch),
+        Array.Empty<EdgeChannelPolicySnapshot>(), PortalBrowser.Chrome);
+    Check(AppLogger.Lines.Any(line => line.Contains("Status=WindowMismatch")), "Window mismatch status was not retained in logs.");
+}
 else throw new Exception("Unknown diagnostic scenario.");
 
 Check(message.EndsWith(AppLogger.CurrentLogPath), "The support log path is missing.");
@@ -166,7 +246,7 @@ Console.WriteLine("PASS: " + scenario);
 
 namespace BrowserThumbnailPrototype
 {
-    internal enum DevToolsProbeStatus { Ready, NoPortalTarget, Unreachable, InvalidResponse }
+    internal enum DevToolsProbeStatus { Ready, NoPortalTarget, Unreachable, InvalidResponse, BrowserMismatch, Ambiguous, WindowMismatch }
     internal sealed record DevToolsPortProbe(int Port, DevToolsProbeStatus Status, IReadOnlyList<string> OfficeCodes, string? FailureKind = null);
     internal sealed record DevToolsDiscoveryResult(int? Port, IReadOnlyList<DevToolsPortProbe> Probes);
     internal static class AppLogger

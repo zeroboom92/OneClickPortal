@@ -677,7 +677,8 @@ public sealed partial class MainForm : Form
             AppPreferences.IsAlwaysOnTopEnabled(),
             AppPreferences.GetEducationOfficeCode(),
             AppPreferences.GetWindowOpacityPercent(),
-            _displayMode);
+            _displayMode,
+            AppPreferences.GetLoginBrowser());
         var wasExpanded = _topDock?.IsExpanded == true;
         using var autoHidePause = _topDock?.SuspendAutoHide();
         dialog.WindowOpacityPreviewChanged += (_, _) =>
@@ -704,6 +705,7 @@ public sealed partial class MainForm : Form
             AppPreferences.SetAlwaysOnTopEnabled(dialog.AlwaysOnTopEnabled);
             AppPreferences.SetWindowOpacityPercent(dialog.WindowOpacityPercent);
             AppPreferences.SetDisplayMode(dialog.DisplayMode);
+            AppPreferences.SetLoginBrowser(dialog.LoginBrowser);
             ApplyWindowOpacity();
             if (_displayMode != dialog.DisplayMode)
                 ApplyDisplayMode(dialog.DisplayMode);
@@ -935,7 +937,10 @@ public sealed partial class MainForm : Form
                 + $"office={educationOffice.Code}, process={selected.ProcessName}");
             var discovery = await DevToolsDiscovery.InspectPortalPortsAsync(
                 educationOffice,
+                BrowserSupport.FromProcessName(selected.ProcessName),
                 _workflowCancellationSource.Token);
+            NativeMethods.GetWindowThreadProcessId(selected.Handle, out var selectedProcessId);
+            discovery = BrowserEndpointOwner.ForProcess(discovery, selectedProcessId);
             _devToolsPort = discovery.Port;
             if (_devToolsPort is null)
             {
@@ -944,7 +949,7 @@ public sealed partial class MainForm : Form
                 SetConnectionStatus("연결 실패 · 원인 안내 확인");
                 MessageBox.Show(
                     this,
-                    EdgeChannelDiagnostics.DescribeFailure(educationOffice, discovery),
+                    EdgeChannelDiagnostics.DescribeFailure(educationOffice, discovery, BrowserSupport.FromProcessName(selected.ProcessName)),
                     "자동화 연결 필요",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -961,7 +966,7 @@ public sealed partial class MainForm : Form
                     });
                 await controller.PrepareApplicationTargetsAsync(_workflowCancellationSource.Token,
                     afterNiceReady: token => CheckFieldTripReportsOnConnectAsync(
-                        controller, _devToolsPort.Value, educationOffice, token));
+                        _devToolsPort.Value, educationOffice, token));
                 UpdateAutoRefreshTimer();
                 AppLogger.Info(
                     "Connection",
@@ -1012,7 +1017,7 @@ public sealed partial class MainForm : Form
 
             ResetFailedBrowserConnection();
             SetConnectionStatus("연결 실패");
-            var policyHints = EdgeChannelDiagnostics.DescribePolicyHints();
+            var policyHints = EdgeChannelDiagnostics.DescribePolicyHints(BrowserSupport.FromProcessName(selected.ProcessName));
             MessageBox.Show(this, exception.Message
                 + (string.IsNullOrEmpty(policyHints) ? "" : "\r\n\r\n" + policyHints)
                 + "\r\n\r\n문의하실 때 아래 로그 파일을 함께 전달해 주세요.\r\n" + AppLogger.CurrentLogPath,
@@ -1058,7 +1063,10 @@ public sealed partial class MainForm : Form
         try
         {
             var educationOffice = EducationOfficeCatalog.GetByCode(AppPreferences.GetEducationOfficeCode());
-            if (await ControlledEdgeLauncher.TryReuseAsync(educationOffice))
+            var browser = AppPreferences.GetLoginBrowser();
+            var browserName = BrowserSupport.GetDisplayName(browser);
+            var reusedPort = await ControlledEdgeLauncher.TryReusePortAsync(educationOffice, browser);
+            if (reusedPort is not null)
             {
                 if (_isClosing || IsDisposed || Disposing) return;
                 ResetNotificationObservations();
@@ -1066,72 +1074,50 @@ public sealed partial class MainForm : Form
                 await Task.Delay(500);
                 if (_isClosing || IsDisposed || Disposing) return;
                 RefreshBrowserWindows();
-                SelectLaunchedPortalEdge();
+                SelectLaunchedPortalEdge(browser, reusedPort);
                 return;
             }
 
             if (_isClosing || IsDisposed || Disposing) return;
-            var edgePath = FindEdgeExecutable();
-            if (edgePath is null)
-            {
-                throw new FileNotFoundException("Microsoft Edge 실행 파일을 찾지 못했습니다.");
-            }
-
-            var profilePath = EdgeIntegrationPolicy.ControlledProfilePath;
-            Directory.CreateDirectory(profilePath);
-
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = edgePath,
-                UseShellExecute = false,
-            };
             var port = ControlledEdgeLauncher.FindAvailablePort();
-            startInfo.ArgumentList.Add($"--remote-debugging-port={port}");
-            startInfo.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
-            startInfo.ArgumentList.Add($"--user-data-dir={profilePath}");
-            startInfo.ArgumentList.Add("--start-maximized");
-            startInfo.ArgumentList.Add("--new-window");
-            startInfo.ArgumentList.Add("--disable-background-timer-throttling");
-            startInfo.ArgumentList.Add("--disable-renderer-backgrounding");
-            startInfo.ArgumentList.Add("--disable-backgrounding-occluded-windows");
-            if (!EdgeIntegrationPolicy.PrepareControlledProfile(educationOffice))
+            var startInfo = BrowserSupport.CreateStartInfo(browser, port, educationOffice);
+            if (!EdgeIntegrationPolicy.PrepareControlledProfile(educationOffice, browser))
             {
-                SetStatus("로그인 창의 권한 설정을 준비하지 못했습니다. 원클릭에서 연 Edge를 닫은 뒤 다시 시도해 주세요.");
+                SetStatus($"로그인 창의 권한 설정을 준비하지 못했습니다. 원클릭에서 연 {browserName}를 닫은 뒤 다시 시도해 주세요.");
                 MessageBox.Show(this,
                     "인증서 로그인에 필요한 브라우저 권한을 설정하지 못했습니다.\n\n"
-                    + "원클릭의 '로그인'으로 연 Edge 창을 모두 닫은 뒤 다시 '로그인'을 눌러 주세요.\n\n"
+                    + $"원클릭의 '로그인'으로 연 {browserName} 창을 모두 닫은 뒤 다시 '로그인'을 눌러 주세요.\n\n"
                     + "현재 창에서 진행하려면 주소창 왼쪽 사이트 정보 → 이 사이트에 대한 사용 권한에서 "
                     + "로컬 네트워크 접근을 허용한 뒤 새로고침해 주세요.",
                     "로그인 권한 설정 안내", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            startInfo.ArgumentList.Add(educationOffice.PortalUri.AbsoluteUri);
             using var launchedProcess = Process.Start(startInfo);
             ResetNotificationObservations();
 
             SetStatus("업무포털 로그인 창의 연결 채널을 확인하고 있습니다.");
-            var probe = await WaitForLaunchedEdgeChannelAsync(port, educationOffice);
+            var probe = await WaitForLaunchedEdgeChannelAsync(port, educationOffice, browser);
             if (_isClosing || IsDisposed || Disposing) return;
             RefreshBrowserWindows();
-            SelectLaunchedPortalEdge();
+            SelectLaunchedPortalEdge(browser, port);
             if (probe.Status is DevToolsProbeStatus.Ready or DevToolsProbeStatus.NoPortalTarget)
             {
-                AppLogger.Info("EdgeLaunch", $"로그인 창 제어 채널 준비 완료: port={port}, office={educationOffice.Code}");
+                AppLogger.Info("BrowserLaunch", $"로그인 창 제어 채널 준비 완료: browser={browserName}, port={port}, office={educationOffice.Code}");
                 SetStatus("업무포털 로그인 창을 열었습니다. 로그인 후 연결을 눌러 주세요.");
             }
             else
             {
                 SetStatus("로그인 창의 연결 채널 확인 실패 · 원인 안내 확인");
                 MessageBox.Show(this, EdgeChannelDiagnostics.DescribeFailure(educationOffice,
-                    new DevToolsDiscoveryResult(null, new[] { probe })),
+                    new DevToolsDiscoveryResult(null, new[] { probe }), browser),
                     "로그인 창 연결 확인", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
         catch (Exception exception)
         {
             if (_isClosing || IsDisposed || Disposing) return;
-            AppLogger.Error("EdgeLaunch", "로그인 창 준비 실패", exception);
-            MessageBox.Show(this, exception.Message, "Edge 실행 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            AppLogger.Error("BrowserLaunch", "로그인 창 준비 실패", exception);
+            MessageBox.Show(this, exception.Message, "브라우저 실행 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
         {
@@ -1140,7 +1126,8 @@ public sealed partial class MainForm : Form
         }
     }
 
-    private async Task<DevToolsPortProbe> WaitForLaunchedEdgeChannelAsync(int port, EducationOffice office)
+    private async Task<DevToolsPortProbe> WaitForLaunchedEdgeChannelAsync(int port, EducationOffice office,
+        PortalBrowser browser = PortalBrowser.Edge)
     {
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(12));
         var last = new DevToolsPortProbe(port, DevToolsProbeStatus.Unreachable, Array.Empty<string>());
@@ -1148,7 +1135,7 @@ public sealed partial class MainForm : Form
         {
             while (!_isClosing && !IsDisposed && !Disposing)
             {
-                last = await DevToolsDiscovery.ProbePortAsync(port, office, cancellation.Token);
+                last = await DevToolsDiscovery.ProbePortAsync(port, office, cancellation.Token, browser);
                 if (last.Status is DevToolsProbeStatus.Ready or DevToolsProbeStatus.NoPortalTarget) return last;
                 await Task.Delay(300, cancellation.Token);
             }
@@ -1160,14 +1147,22 @@ public sealed partial class MainForm : Form
         return last;
     }
 
-    private void SelectLaunchedPortalEdge()
+    private void SelectLaunchedPortalEdge(PortalBrowser browser = PortalBrowser.Edge, int? port = null)
     {
         if (_sourceWindow != IntPtr.Zero) return;
+        var owner = port is not null ? BrowserEndpointOwner.FindListeningProcessId(port.Value) : null;
         var candidates = _browserWindows.Items.Cast<BrowserWindowItem>()
-            .Where(window => string.Equals(window.ProcessName, "msedge", StringComparison.OrdinalIgnoreCase)
-                && window.Title.Contains("업무포털", StringComparison.Ordinal))
+            .Where(window => string.Equals(window.ProcessName, BrowserSupport.GetProcessName(browser), StringComparison.OrdinalIgnoreCase)
+                && (port is not null ? owner is not null && IsWindowOwnedBy(window.Handle, owner.Value)
+                    : window.Title.Contains("업무포털", StringComparison.Ordinal)))
             .ToArray();
-        if (candidates.Length == 1) _browserWindows.SelectedItem = candidates[0];
+        _browserWindows.SelectedItem = candidates.Length == 1 ? candidates[0] : null;
+    }
+
+    private static bool IsWindowOwnedBy(IntPtr handle, uint processId)
+    {
+        NativeMethods.GetWindowThreadProcessId(handle, out var owner);
+        return owner == processId;
     }
 
     /// <summary>
@@ -1197,7 +1192,7 @@ public sealed partial class MainForm : Form
         {
             _pendingTaskKind = requestedTask;
             _pendingTaskSystemName = null;
-            SetStatus($"{PortalTaskCatalog.GetName(requestedTask)} 요청을 받았습니다. Edge에 연결하면 이어서 진행합니다.");
+            SetStatus($"{PortalTaskCatalog.GetName(requestedTask)} 요청을 받았습니다. 브라우저에 연결하면 이어서 진행합니다.");
             return;
         }
 
@@ -1253,13 +1248,13 @@ public sealed partial class MainForm : Form
         using var autoHidePause = _topDock?.SuspendAutoHide();
         if (_sourceWindow == IntPtr.Zero || !NativeMethods.IsWindow(_sourceWindow))
         {
-            MessageBox.Show(this, "먼저 로그인된 Edge 창에 연결해 주세요.", "브라우저 연결 필요", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "먼저 로그인된 Chrome 또는 Edge 창에 연결해 주세요.", "브라우저 연결 필요", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
         if (_devToolsPort is null)
         {
-            MessageBox.Show(this, "'로그인'으로 연 Edge에서 업무포털에 로그인한 뒤 다시 연결해 주세요.", "자동화 연결 필요", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "'로그인'으로 연 브라우저에서 업무포털에 로그인한 뒤 다시 연결해 주세요.", "자동화 연결 필요", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -1303,7 +1298,9 @@ public sealed partial class MainForm : Form
             }
             else if (result.KeepActivatedBrowser)
             {
-                ShowSourceWindowMaximized();
+                // The controller has presented the actual task window. Raising the
+                // original portal HWND here would cover a task in another window.
+                RestoreSourceWindowOpacity();
             }
             else
             {
@@ -1596,16 +1593,6 @@ public sealed partial class MainForm : Form
     }
 
     private sealed record SessionNotice(string Title, string Message, bool IsSessionStatus = false);
-
-    private static string? FindEdgeExecutable()
-    {
-        var candidates = new[]
-        {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Microsoft", "Edge", "Application", "msedge.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft", "Edge", "Application", "msedge.exe"),
-        };
-        return candidates.FirstOrDefault(File.Exists);
-    }
 
     private void RestoreSourceWindow()
     {

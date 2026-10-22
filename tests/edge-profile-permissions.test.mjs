@@ -11,19 +11,20 @@ const run = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
 const xml = value => value.replaceAll('&', '&amp;').replaceAll('"', '&quot;');
 
-test('certificate permissions merge safely into an isolated Edge profile', { timeout: 120_000 }, async () => {
+test('certificate permissions merge safely into isolated Edge and Chrome profiles', { timeout: 120_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'oneclick-edge-permissions-'));
   try {
     await writeFile(join(directory, 'Probe.csproj'), `<Project Sdk="Microsoft.NET.Sdk">
       <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><NoWarn>CA1416</NoWarn></PropertyGroup>
       <ItemGroup>
         <Compile Include="${xml(resolve(root, 'EdgeIntegrationPolicy.cs'))}" Link="EdgeIntegrationPolicy.cs" />
+        <Compile Include="${xml(resolve(root, 'BrowserSupport.cs'))}" Link="BrowserSupport.cs" />
         <Compile Include="${xml(resolve(root, 'EducationOffice.cs'))}" Link="EducationOffice.cs" />
       </ItemGroup>
     </Project>`);
     await writeFile(join(directory, 'Program.cs'), probe);
     const result = await run('dotnet', ['run', '--project', join(directory, 'Probe.csproj'), '--configuration', 'Release'], { timeout: 100_000 });
-    assert.match(result.stdout, /PASS: 17 offices, scoped merge, blocked permission repair, idempotence, live lock, stale lock, malformed preferences/);
+    assert.match(result.stdout, /PASS: 17 offices, scoped merge, blocked permission repair, idempotence, live lock, stale lock, malformed preferences, browser isolation, launch arguments/);
   } finally {
     assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
     assert.ok(basename(directory).startsWith('oneclick-edge-permissions-'));
@@ -45,9 +46,44 @@ void Save(string path, JsonObject preferences) => File.WriteAllText(PreferencesP
 var probeRoot = Path.Combine(Path.GetTempPath(), "oneclick-edge-probe-" + Guid.NewGuid().ToString("N"));
 try
 {
+    var edgePath = BrowserSupport.GetControlledProfilePath(PortalBrowser.Edge);
+    var chromePath = BrowserSupport.GetControlledProfilePath(PortalBrowser.Chrome);
+    Check(!string.Equals(edgePath, chromePath, StringComparison.OrdinalIgnoreCase), "Edge and Chrome share a profile directory.");
+    Check(Path.GetFileName(edgePath) == "EdgeAnalysisProfile" && Path.GetFileName(chromePath) == "ChromeAnalysisProfile",
+        "Dedicated browser profile names changed or escaped their isolation.");
+    Check(Path.GetDirectoryName(edgePath) == Path.GetDirectoryName(chromePath)
+        && Path.GetFileName(Path.GetDirectoryName(edgePath)) == "OneClickPortal", "Profiles escaped the application directory.");
+    Check(EdgeIntegrationPolicy.ControlledProfilePath == edgePath, "Existing Edge profile compatibility changed.");
+    foreach (var browser in new[] { PortalBrowser.Edge, PortalBrowser.Chrome })
+    {
+        Check(BrowserSupport.FromProcessName(BrowserSupport.GetProcessName(browser).ToUpperInvariant()) == browser,
+            "Process identity did not select the matching browser.");
+        foreach (var office in EducationOfficeCatalog.All)
+        {
+            var executable = BrowserSupport.FindExecutable(browser);
+            if (executable is null)
+            {
+                var unavailable = false;
+                try { BrowserSupport.CreateStartInfo(browser, 9227, office); }
+                catch (FileNotFoundException) { unavailable = true; }
+                Check(unavailable, "An absent browser did not report a clear launch error.");
+                continue;
+            }
+            var start = BrowserSupport.CreateStartInfo(browser, 9227, office);
+            Check(start.FileName == executable && !start.UseShellExecute, "Browser launch did not use the selected executable.");
+            Check(start.ArgumentList.SequenceEqual(new[] {
+                "--remote-debugging-port=9227", "--remote-debugging-address=127.0.0.1",
+                "--user-data-dir=" + BrowserSupport.GetControlledProfilePath(browser), "--start-maximized", "--new-window",
+                "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows",
+                office.PortalUri.AbsoluteUri,
+            }), "Browser launch lost its private profile, local channel, automatic extension flags or official portal URI.");
+        }
+    }
+
+    foreach (var browser in new[] { PortalBrowser.Edge, PortalBrowser.Chrome })
     foreach (var office in EducationOfficeCatalog.All)
     {
-        var path = Path.Combine(probeRoot, office.Code);
+        var path = Path.Combine(probeRoot, BrowserSupport.GetDisplayName(browser), office.Code);
         Check(Prepare(path, office), "New profile preparation failed: " + office.Code);
         var preferences = Read(path);
         var exceptions = preferences["profile"]!["content_settings"]!["exceptions"]!.AsObject();
@@ -108,7 +144,7 @@ try
     File.WriteAllText(PreferencesPath(profilePath), "{broken json");
     Check(!Prepare(profilePath, selected), "Malformed preferences should fail without replacement.");
     Check(File.ReadAllText(PreferencesPath(profilePath)) == "{broken json", "Malformed preferences were discarded.");
-    Console.WriteLine("PASS: 17 offices, scoped merge, blocked permission repair, idempotence, live lock, stale lock, malformed preferences");
+    Console.WriteLine("PASS: 17 offices, scoped merge, blocked permission repair, idempotence, live lock, stale lock, malformed preferences, browser isolation, launch arguments");
 }
 finally
 {
