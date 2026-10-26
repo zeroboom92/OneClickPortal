@@ -42,6 +42,7 @@ internal sealed class NotificationCenter
     internal const int MaximumEntries = 300;
     internal const int MaximumRememberedItems = 1000;
     internal const int PendingAbsenceRetentionDays = 35;
+    private const int CurrentPendingAbsenceQueryVersion = 1;
     private const int MaximumStoreBytes = 16 * 1024 * 1024;
     private readonly object syncRoot = new();
     private readonly string storagePath;
@@ -54,6 +55,7 @@ internal sealed class NotificationCenter
     // Dates are Korea calendar dates; values contain only scoped source fingerprints.
     // Reading or clearing visible history must not repeat the same day's pending alerts.
     private readonly Dictionary<DateOnly, HashSet<string>> notifiedPendingAbsenceDays = [];
+    private int pendingAbsenceQueryVersion;
     private bool initialReadFailed;
     private bool hasPersistenceError;
 
@@ -236,6 +238,7 @@ internal sealed class NotificationCenter
         var oldestDay = DateOnly.FromDayNumber(Math.Max(0, day.DayNumber - PendingAbsenceRetentionDays + 1));
         List<PortalNotification> added = [];
         bool persistenceChanged;
+        bool queryUpgraded;
         lock (syncRoot)
         {
             if (initialReadFailed) return Array.Empty<PortalNotification>();
@@ -244,6 +247,17 @@ internal sealed class NotificationCenter
             // Retained sets are immutable during this transaction, so restoring these
             // references also restores pruned dates after an unsuccessful atomic write.
             var previousDays = notifiedPendingAbsenceDays.ToArray();
+            var previousQueryVersion = pendingAbsenceQueryVersion;
+            // Older builds queried the entire school year. Retire their counts and
+            // daily keys only after the caller supplies a complete successful result
+            // for the screen's period, and persist this correction with the new keys.
+            queryUpgraded = pendingAbsenceQueryVersion < CurrentPendingAbsenceQueryVersion;
+            if (queryUpgraded)
+            {
+                entries.RemoveAll(entry => entry.Kind == NotificationKind.AbsencePending);
+                notifiedPendingAbsenceDays.Clear();
+                pendingAbsenceQueryVersion = CurrentPendingAbsenceQueryVersion;
+            }
             var pruned = false;
             foreach (var date in notifiedPendingAbsenceDays.Keys
                 .Where(date => date < oldestDay || date > day).ToArray())
@@ -261,7 +275,7 @@ internal sealed class NotificationCenter
                 added.Add(Create(NotificationKind.AbsencePending, newCount, timestamp));
                 AddAndSave(added);
             }
-            else if (pruned || hasPersistenceError) Save();
+            else if (queryUpgraded || pruned || hasPersistenceError) Save();
             if (hasPersistenceError)
             {
                 // Display only alerts whose deduplication keys are durable. A retry
@@ -270,11 +284,13 @@ internal sealed class NotificationCenter
                 entries.AddRange(previousEntries);
                 notifiedPendingAbsenceDays.Clear();
                 foreach (var pair in previousDays) notifiedPendingAbsenceDays.Add(pair.Key, pair.Value);
+                pendingAbsenceQueryVersion = previousQueryVersion;
+                queryUpgraded = false;
                 added.Clear();
             }
             persistenceChanged = previousPersistenceError != hasPersistenceError;
         }
-        if (added.Count > 0 || persistenceChanged) Changed?.Invoke(this, EventArgs.Empty);
+        if (added.Count > 0 || queryUpgraded || persistenceChanged) Changed?.Invoke(this, EventArgs.Empty);
         return added.AsReadOnly();
     }
 
@@ -406,6 +422,7 @@ internal sealed class NotificationCenter
                     id: entry.Id, isRead: entry.IsRead)));
             notifiedFieldTripReports.UnionWith(reportKeys);
             foreach (var pair in absenceDays) notifiedPendingAbsenceDays.Add(pair.Key, pair.Value);
+            pendingAbsenceQueryVersion = store.PendingAbsenceQueryVersion;
         }
         catch (JsonException)
         {
@@ -440,7 +457,8 @@ internal sealed class NotificationCenter
                 entry.Id, entry.Kind, entry.CreatedAt, entry.IsRead, entry.ItemCount)).ToList(),
                 notifiedFieldTripReports.Count == 0 ? null : notifiedFieldTripReports.Order(StringComparer.Ordinal).ToList(),
                 notifiedPendingAbsenceDays.Count == 0 ? null : notifiedPendingAbsenceDays.OrderBy(pair => pair.Key)
-                    .Select(pair => new StoredPendingAbsenceDay(pair.Key, pair.Value.Order(StringComparer.Ordinal).ToList())).ToList());
+                    .Select(pair => new StoredPendingAbsenceDay(pair.Key, pair.Value.Order(StringComparer.Ordinal).ToList())).ToList(),
+                pendingAbsenceQueryVersion);
             using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write,
                 FileShare.None, 4096, FileOptions.WriteThrough))
             {
@@ -477,7 +495,9 @@ internal sealed class NotificationCenter
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         List<string>? NotifiedFieldTripReportFingerprints = null,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        List<StoredPendingAbsenceDay>? NotifiedPendingAbsenceDays = null);
+        List<StoredPendingAbsenceDay>? NotifiedPendingAbsenceDays = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        int PendingAbsenceQueryVersion = 0);
     private sealed record StoredPendingAbsenceDay(DateOnly Date, List<string> Fingerprints);
     private sealed record StoredNotification(
         string Id, NotificationKind Kind, DateTimeOffset CreatedAt, bool IsRead, int ItemCount);

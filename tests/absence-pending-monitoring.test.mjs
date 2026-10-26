@@ -64,6 +64,7 @@ test('actual absence monitor alerts for all initial pending items and protects d
         <ItemGroup>
           <Compile Include="${xml(resolve(root, 'MainForm.AbsenceReports.cs'))}" Link="MainForm.AbsenceReports.cs" />
           <Compile Include="${xml(resolve(root, 'NotificationCenter.cs'))}" Link="NotificationCenter.cs" />
+
         </ItemGroup>
       </Project>`);
       await writeFile(join(directory, 'Program.cs'), probe);
@@ -326,7 +327,7 @@ namespace BrowserThumbnailPrototype
     }
     internal enum AbsencePendingReadState
     {
-        Available, PageMissing, MultiplePages, ScopeUnavailable, Busy, QueryFailed, SnapshotUnavailable, NotAuthorized,
+        Available, PageMissing, MultiplePages, ScopeUnavailable, Busy, QueryFailed, SnapshotUnavailable, NotAuthorized, PeriodUnavailable,
     }
     internal sealed record AbsencePendingReadResult(IReadOnlyList<NotificationSourceItem>? Items,
         string? Scope, AbsencePendingReadState State, string? SourceId = null);

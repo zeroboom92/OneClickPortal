@@ -5,7 +5,7 @@ namespace BrowserThumbnailPrototype;
 internal enum AbsencePendingReadState
 {
     Available, PageMissing, MultiplePages, ScopeUnavailable, Busy, QueryFailed,
-    SnapshotUnavailable, NotAuthorized,
+    SnapshotUnavailable, NotAuthorized, PeriodUnavailable,
 }
 
 internal sealed record AbsencePendingReadResult(
@@ -65,7 +65,8 @@ internal static class NiceAbsencePendingReader
 
     // Official 2026-10-22 contracts: Swc Util.doAuthList and the absence-list
     // submission. All maps, datasets and submissions below are private temporary
-    // objects. No menu, MDI selection, existing search, grid or browser state changes.
+    // objects. Read only the existing date range; a closed page uses the site's
+    // first/last day of the current month default. No existing screen state changes.
     internal static string Script(string officeDomain, string officeCode, bool startQuery) => $$"""
         (() => {
           try {
@@ -105,11 +106,52 @@ internal static class NiceAbsencePendingReader
             };
             const who = identity();
             if (!who) return result('ScopeUnavailable');
+            const readPeriod = () => {
+              try {
+                const owners = Object.values(platform.getAllRunningAppInstances()).filter(app => !app.disposed
+                  && app.app?.id === 'edu/sa/eds/eaa/ae/eds_eaaae03_m01');
+                if (owners.length > 1) return null;
+                if (!owners.length) {
+                  // This is the same local-calendar default used by the site's E().
+                  const now = new Date(Date.now()), year = now.getFullYear(), month = now.getMonth();
+                  const prefix = String(year)+String(month+1).padStart(2,'0');
+                  return {app:null,begin:prefix+'01',end:prefix+new Date(year,month+1,0).getDate()};
+                }
+                const app = owners[0], search = app.lookup?.('dmSearch');
+                const beginControl = app.lookup?.('dtAbeBgngYmd'), endControl = app.lookup?.('dtAbeEndYmd');
+                if (!search?.getValue || !beginControl || !endControl
+                    || text(search.getValue('shlCd')) !== who.school
+                    || text(search.getValue('ayr')) !== who.year) return null;
+                const begin = text(search.getValue('abeBgngDt')), end = text(search.getValue('abeEndDt'));
+                const valid = value => {
+                  if (!/^\d{8}$/.test(value)) return false;
+                  const year=Number(value.slice(0,4)), month=Number(value.slice(4,6)), day=Number(value.slice(6,8));
+                  const date=new Date(year,month-1,day);
+                  return year>=2000 && year<=2100 && date.getFullYear()===year
+                    && date.getMonth()===month-1 && date.getDate()===day;
+                };
+                if (!valid(begin) || !valid(end) || begin>end
+                    || text(beginControl.value)!==begin || text(endControl.value)!==end) return null;
+                return {app,begin,end};
+              } catch { return null; }
+            };
+            const period = readPeriod();
+            if (!period) {
+              previous?.cancel?.();
+              globalThis[stateKey] = undefined;
+              return result('PeriodUnavailable');
+            }
             const signature = JSON.stringify(who), scope = JSON.stringify([office,who.account,who.school]);
-            const sameIdentity = () => JSON.stringify(identity()) === signature;
+            const periodSignature = JSON.stringify([period.begin,period.end]);
+            const sameIdentity = () => {
+              const current = readPeriod();
+              return JSON.stringify(identity()) === signature && current?.app === period.app
+                && JSON.stringify([current?.begin,current?.end]) === periodSignature;
+            };
             let observation = globalThis[stateKey];
-            if (observation && (observation.root.disposed || observation.root !== root
-                || observation.signature !== signature)) {
+            if (observation && (observation.version !== 2 || observation.root.disposed || observation.root !== root
+                || observation.signature !== signature || observation.periodApp !== period.app
+                || observation.periodSignature !== periodSignature)) {
               observation.cancel?.();
               observation = globalThis[stateKey] = undefined;
             }
@@ -168,17 +210,16 @@ internal static class NiceAbsencePendingReader
               '5':[['swcOrgAyr','ayr'],['swcOrgShlCrseScCdExcl','shlCrseScCd'],['swcOrgGrd','grd'],['swcOrgClsCd','clsCd']]
             };
             const commands = commandTypes[who.course];
-            const nextYear = Number(who.year) + 1;
-            const lastFebruary = nextYear % 4 === 0 && (nextYear % 100 !== 0 || nextYear % 400 === 0) ? '29' : '28';
             const searchColumns = ['ayr','ordScCd','grd','dddepCd','ordGrdDddepCd','clsCd','stuInvlNo',
               'actScCd','shlCd','atteYmd','enrScCd','shlKndScCd','stuFlnm','clsNm','clsNo',
               'eduActPrcsStsCd','shlCrseScCd','dghtCrseScCd','orgCd','onlAplyYn','atrzStsCd',
               'abeBgngDt','abeEndDt','ayrAuthType'];
             const base = Object.fromEntries(searchColumns.map(name => [name,'']));
             Object.assign(base,{shlCd:who.school,ayr:who.year,shlKndScCd:who.schoolKind,
-              shlCrseScCd:who.course,abeBgngDt:who.year+'0301',abeEndDt:String(nextYear)+'02'+lastFebruary});
+              shlCrseScCd:who.course,abeBgngDt:period.begin,abeEndDt:period.end});
             const nonce = '__oneClickAbsence_'+Date.now()+'_'+Math.random().toString(36).slice(2);
-            observation = {root,util,signature,scope,state:'Started',inFlight:true,items:new Set(),
+            observation = {version:2,root,util,signature,scope,periodApp:period.app,periodSignature,
+              state:'Started',inFlight:true,items:new Set(),
               jobs:[{kind:'auth',depth:0,search:base}],current:null,sequence:0,groups:0,requests:0,
               startedAt:Date.now()};
             globalThis[stateKey] = observation;

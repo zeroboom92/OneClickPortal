@@ -16,6 +16,14 @@ internal static class UpdateHistory
     // 1.0.1은 로컬 수정·미배포로 기록되어 있어 포함하지 않습니다.
     public static IReadOnlyList<UpdateRelease> Releases { get; } = Array.AsReadOnly(new UpdateRelease[]
     {
+        // v1.4.3: browser-choice announcement prepared for user review.
+        new("1.4.3", new DateOnly(2026, 10, 26),
+            "이제 크롬에서도 사용할 수 있어요",
+            "설정에서 크롬 또는 엣지를 선택해 사용할 수 있습니다.\n선택한 브라우저로 로그인한 뒤 연결해 주세요.",
+            ReadOnlyChanges(
+                "설정의 로그인 브라우저에서 Chrome 또는 Edge를 선택할 수 있습니다.",
+                "원클릭의 로그인 버튼으로 선택한 브라우저를 열고, 로그인한 뒤 연결을 눌러 주세요.",
+                "로그인·인증서 선택과 최종 상신·결재는 사용자가 직접 진행합니다.")),
         // v1.4.0: pending-report notifications prepared for user review.
         new("1.4.0", new DateOnly(2026, 10, 15),
             "미상신 보고서를 알려드려요",

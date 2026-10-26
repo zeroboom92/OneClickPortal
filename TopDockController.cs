@@ -1,4 +1,5 @@
 using Microsoft.Win32;
+using System.Runtime.InteropServices;
 
 namespace BrowserThumbnailPrototype;
 
@@ -283,7 +284,43 @@ internal sealed class TopDockController : IDisposable, IMessageFilter
     {
         if (visible && !_handle.Visible) _handle.Show();
         else if (!visible && _handle.Visible) _handle.Hide();
+        if (visible) EnsureHandleOnTop();
     }
+
+    private void EnsureHandleOnTop()
+    {
+        if (!Enabled || _disposed || !_portal.Visible || !_portal.Enabled
+            || !_handle.Visible || _handle.IsDisposed || _autoHideSuspensions > 0
+            || _expanded || _animation.Enabled || _dragControl is not null
+            || Application.OpenForms.Cast<Form>().Any(form => form.Visible && form.Modal)) return;
+
+        // Visible/TopMost managed properties do not prove that the native window is
+        // still above a maximized browser or another topmost window. Repair only a
+        // lost native style or an actually covered handle, without taking focus.
+        var window = _handle.Handle;
+        var topMost = (GetWindowLong(window, -20) & 0x00000008) != 0;
+        var center = new Point(_handle.Left + _handle.Width / 2, _handle.Top + _handle.Height / 2);
+        var hit = WindowFromPoint(center);
+        var coveringWindow = hit == IntPtr.Zero ? IntPtr.Zero : GetAncestor(hit, 2); // GA_ROOT
+        if (topMost && (coveringWindow == IntPtr.Zero || coveringWindow == window)) return;
+        _handle.TopMost = true;
+        SetWindowPos(window, new IntPtr(-1), 0, 0, 0, 0,
+            0x0001 | 0x0002 | 0x0010 | 0x0200); // NOSIZE | NOMOVE | NOACTIVATE | NOOWNERZORDER
+    }
+
+    [DllImport("user32.dll")]
+    private static extern int GetWindowLong(IntPtr window, int index);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(Point point);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr window, uint flags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter,
+        int x, int y, int width, int height, uint flags);
 
     bool IMessageFilter.PreFilterMessage(ref Message message)
     {

@@ -37,7 +37,7 @@ function makeMenus() {
 }
 
 function fixture(options = {}) {
-  let now = 1_000_000;
+  let now = options.now ?? new Date(2026,9,23,12).getTime();
   let sequence = 0;
   const user = {userId:'ACCOUNT-A',instCd:'SCHOOL-A',ayr:'2026',Ayr:'2026',
     shlCrseScCd:'2',shlKndScCd:'01',orgCd:'ORG-A',orgScCd:'S',...options.user};
@@ -45,6 +45,8 @@ function fixture(options = {}) {
   const menuColumns = [...new Set(menus.flatMap(Object.keys))];
   const requests = [], pendingRequests = [], registered = new Set(), reads = [];
   const existingSearch = Object.freeze({stuFlnm:'USER-FILTER',clsCd:'USER-CLASS',abeBgngDt:'20261001'});
+  const search = {shlCd:user.instCd,ayr:user.ayr,abeEndDt:'20261031',...existingSearch,...options.search};
+  const controls = {};
   const existingRows = Object.freeze([Object.freeze({abeDclrId:'EDITED-ROW',chk:'1',edited:true})]);
   const menu = {getColumnNames:() => [...menuColumns],getRowCount:() => menus.length,
     getValue:(row,name) => menus[row][name],getRowData:row => ({...menus[row]})};
@@ -53,8 +55,14 @@ function fixture(options = {}) {
     return menu;
   },register(value) {registered.add(value);},unregister(value) {registered.delete(value);}};
   const apps = {root};
-  if (options.open !== false) apps.absence = {disposed:false,app:{id:absenceApp},lookup() {
-    throw new Error('The existing absence application must not be read or changed.');
+  if (options.open !== false) apps.absence = {disposed:false,app:{id:absenceApp},lookup(name) {
+    if (name==='dmSearch') return {getValue(field) {
+      assert.ok(['shlCd','ayr','abeBgngDt','abeEndDt'].includes(field),`Unexpected search read: ${field}`);
+      return search[field];
+    }};
+    if (name==='dtAbeBgngYmd') return {get value(){return controls.begin??search.abeBgngDt;}};
+    if (name==='dtAbeEndYmd') return {get value(){return controls.end??search.abeEndDt;}};
+    throw new Error('Only the existing absence date range may be read.');
   }};
   class DataMap {
     constructor(id) {this.id=id;this.values={};this.disposed=false;}
@@ -140,14 +148,15 @@ function fixture(options = {}) {
   }
   const location={protocol:'https:',hostname:domain,pathname:'/index.html',href:`https://${domain}/index.html`};
   const document={readyState:'complete',body:{innerText:''}};
-  const context=vm.createContext({location,document,Date:{now:()=>now},Math,
+  class ClockDate extends Date {static now(){return now;}}
+  const context=vm.createContext({location,document,Date:ClockDate,Math,
     cpr:{data:{DataMap,DataSet},protocols:{Submission},core:{Platform:{INSTANCE:{getAllRunningAppInstances:()=>apps}}}},
     createCommonUtil:()=>({Auth:{getUserInfo:owner=>{assert.equal(owner,root);return {getValue:name=>user[name]};}}}),
     fetch(){throw new Error('Only verified CPR submissions are allowed.');},
     XMLHttpRequest(){throw new Error('Only verified CPR submissions are allowed.');},
   });
   const f={user,menus,menuColumns,menu,root,apps,requests,pendingRequests,registered,reads,context,location,document,
-    existingSearch,existingRows,advance(ms){now+=ms;},
+    existingSearch,existingRows,search,controls,advance(ms){now+=ms;},
     run(start=true){return JSON.parse(JSON.stringify(vm.runInContext(script(start),context,{timeout:1000})));},
     complete(rows,extra={}) {
       const request=pendingRequests.shift();assert.ok(request,'No query is pending.');
@@ -209,8 +218,8 @@ test('finds all three existing pending absences without opening or selecting the
     const request=f.requests.at(-1);
     assert.equal(request.search.clsCd,'00');
     assert.equal(request.search.grd,'3');
-    assert.equal(request.search.abeBgngDt,'20260301');
-    assert.equal(request.search.abeEndDt,'20270228');
+    assert.equal(request.search.abeBgngDt,'20261001');
+    assert.equal(request.search.abeEndDt,'20261031');
     for (const field of ['stuFlnm','stuInvlNo','clsNo','eduActPrcsStsCd','atrzStsCd','onlAplyYn'])
       assert.equal(request.search[field],'');
     assert.equal(request.auth.V_MENU_ID,'CLASS-3');
@@ -228,6 +237,83 @@ test('queries each authorized grade and deduplicates documents across the comple
   assert.deepEqual(result.items,['SAME','GRADE-1','GRADE-2'].map(id=>JSON.stringify(['SCHOOL-A','2026',id])));
   assert.deepEqual(f.requests.filter(request=>request.classes).map(request=>request.search.grd),['1','2']);
   f.assertClean();
+});
+
+test('matches the screen month with three pending reports instead of eight school-year reports',()=>{
+  const f=fixture();f.run();
+  const three=['A','B','C'].map(id=>pending(id));
+  const previous=Array.from({length:5},(_,index)=>pending(`OLDER-${index}`));
+  const result=f.drain(request=>request.search.abeBgngDt==='20261001'
+    && request.search.abeEndDt==='20261031'?three:[...three,...previous]);
+  assert.equal(result.state,'Available');assert.equal(result.items.length,3);
+  assert.equal(result.items.some(item=>item.includes('OLDER')),false);
+  for (const request of f.requests) {
+    assert.equal(request.search.abeBgngDt,'20261001');
+    assert.equal(request.search.abeEndDt,'20261031');
+  }
+  f.assertClean();
+});
+
+test('copies a custom screen period without changing its dates or reading student filters',()=>{
+  const f=fixture({search:{abeBgngDt:'20260915',abeEndDt:'20261023'}});
+  const before=JSON.stringify(f.search);f.run();assert.equal(f.drain().items.length,3);
+  assert.ok(f.requests.every(request=>request.search.abeBgngDt==='20260915'
+    && request.search.abeEndDt==='20261023'));
+  assert.equal(JSON.stringify(f.search),before);f.assertClean();
+});
+
+test('a closed screen uses the official current-month default across leap days and year boundaries',()=>{
+  for (const [year,month,end] of [[2026,1,'20260228'],[2028,1,'20280229'],
+    [2026,11,'20261231'],[2027,0,'20270131']]) {
+    const f=fixture({open:false,now:new Date(year,month,15,12).getTime()});f.run();
+    assert.equal(f.requests[0].search.abeBgngDt,end.slice(0,6)+'01');
+    assert.equal(f.requests[0].search.abeEndDt,end);
+    assert.equal(f.drain().state,'Available');f.assertClean();
+  }
+});
+
+test('rejects missing, invalid, inverted, unbound or ambiguous screen periods without a fallback',()=>{
+  for (const change of [f=>{f.search.abeBgngDt='';},f=>{f.search.abeEndDt='';},
+    f=>{f.search.abeBgngDt='20260230';},f=>{f.search.abeEndDt='20261301';},
+    f=>{f.search.abeBgngDt='20261101';},f=>{f.controls.begin='20261002';},
+    f=>{f.controls.end='20261030';},f=>{f.search.shlCd='OTHER';},
+    f=>{f.search.ayr='2025';},f=>{f.apps.secondAbsence={...f.apps.absence};},
+    f=>{f.apps.absence.lookup=()=>null;}]) {
+    const f=fixture();change(f);assert.deepEqual(f.run(),{state:'PeriodUnavailable'});
+    assert.equal(f.requests.length,0);assert.equal(f.registered.size,0);
+  }
+});
+
+test('changing dates or closing or replacing a screen invalidates in-flight and completed results',()=>{
+  for (const change of [f=>{f.search.abeBgngDt='20261002';},f=>{f.search.abeEndDt='20261030';},
+    f=>{f.apps.absence.disposed=true;},f=>{f.apps.absence={...f.apps.absence};}]) {
+    const f=fixture();f.run();change(f);f.complete([{cd:'2026'}]);
+    assert.notEqual(f.run(false).state,'Available');assert.equal(f.requests.length,1);f.assertClean();
+    const completed=fixture();completed.run();assert.equal(completed.drain().items.length,3);
+    change(completed);assert.notEqual(completed.run(false).state,'Available');completed.assertClean();
+  }
+  const f=fixture();f.run();f.drain();f.search.abeBgngDt='20260901';
+  f.run();assert.equal(f.drain([pending('SEPTEMBER')]).items.length,1);
+  assert.equal(f.requests.at(-1).search.abeBgngDt,'20260901');f.assertClean();
+});
+
+test('a month rollover invalidates the cached default period without changing the authenticated scope',()=>{
+  const f=fixture({open:false,now:new Date(2026,9,31,23,59,59).getTime()});
+  f.run();const october=f.drain();f.advance(2000);
+  assert.notEqual(f.run(false).state,'Available');f.run();const november=f.drain();
+  assert.equal(october.scope,november.scope);
+  assert.equal(f.requests.at(-1).search.abeBgngDt,'20261101');
+  assert.equal(f.requests.at(-1).search.abeEndDt,'20261130');f.assertClean();
+});
+
+test('retires completed or in-flight pre-fix school-year observations before querying the screen period',()=>{
+  for (const inFlight of [true,false]) {
+    const f=fixture();let canceled=0;
+    f.context.__oneClickAbsencePendingReadV1={root:f.root,signature:'legacy',state:'Available',inFlight,
+      items:new Set(Array.from({length:8},(_,index)=>`OLD-${index}`)),cancel(){canceled++;}};
+    assert.notEqual(f.run(false).state,'Available');assert.equal(canceled,1);
+    assert.equal(f.run().state,'Started');assert.equal(f.drain().items.length,3);f.assertClean();
+  }
 });
 
 test('ignores broad all-class/year entries and uses only the account-authorized concrete rows',()=>{
@@ -340,8 +426,9 @@ test('supports course-specific authority chains and the official combined high-s
   }
 });
 
-test('uses PRESENT authority for lifelong schools and includes the school-year leap day',()=>{
-  const f=fixture({user:{shlKndScCd:'12',ayr:'2027',Ayr:'2027'}});f.run();
+test('uses PRESENT authority for lifelong schools and the screen leap-day range',()=>{
+  const f=fixture({user:{shlKndScCd:'12',ayr:'2027',Ayr:'2027'},
+    search:{abeBgngDt:'20280201',abeEndDt:'20280229'}});f.run();
   assert.equal(f.requests[0].rights[0].tenseType,'PRESENT');
   assert.equal(f.requests[0].search.abeEndDt,'20280229');
   assert.equal(f.drain([],{swcOrgAyr:[{cd:'2027'}]}).state,'Available');f.assertClean();

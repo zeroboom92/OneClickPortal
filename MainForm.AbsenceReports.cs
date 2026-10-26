@@ -168,7 +168,7 @@ public sealed partial class MainForm
         if (result.State == AbsencePendingReadState.Available && result.Items is { } items
             && !string.IsNullOrWhiteSpace(result.Scope))
         {
-            SetAbsenceReportStatus($"결석신고서 접수대기 · {items.Count:N0}건 · {DateTime.Now:HH:mm:ss} 확인\n연결 시와 {AbsenceReportIntervalMinutes}분마다 조회합니다.");
+            SetAbsenceReportStatus($"결석신고서 접수대기 · {items.Count:N0}건 · {DateTime.Now:HH:mm:ss} 확인\n나이스와 같은 조회 기간으로 연결 시와 {AbsenceReportIntervalMinutes}분마다 조회합니다.");
             if (_studentNotificationPreview) return;
             // Only the notification engine receives stable source identifiers. Its
             // daily scoped fingerprints and generic count summaries handle all storage.
@@ -185,6 +185,7 @@ public sealed partial class MainForm
             AbsencePendingReadState.Busy => "결석신고서 접수대기 · 나이스 화면 작업이 끝난 뒤 다음 주기에 다시 확인합니다.",
             AbsencePendingReadState.QueryFailed => "결석신고서 접수대기 · 조회를 완료하지 못했습니다. 다음 주기에 다시 확인합니다.",
             AbsencePendingReadState.NotAuthorized => "결석신고서 접수대기 · 결석신고서관리 조회 권한을 확인해 주세요.",
+            AbsencePendingReadState.PeriodUnavailable => "결석신고서 접수대기 · 결석신고서관리 화면의 조회 기간을 확인해 주세요.",
             _ => "결석신고서 접수대기 · 전체 조회 결과를 확인하지 못했습니다. 다음 주기에 다시 확인합니다.",
         });
     }

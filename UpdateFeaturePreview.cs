@@ -9,9 +9,14 @@ internal sealed class UpdateFeaturePreview : Control
     private static readonly Color Muted = Color.FromArgb(92, 102, 116);
     private static readonly Color Blue = Color.FromArgb(42, 106, 190);
     private static readonly string IconFontFamily = GetIconFontFamily();
+    private readonly bool _browserChoicePreview;
 
-    public UpdateFeaturePreview()
+    public UpdateFeaturePreview() : this(UpdateHistory.Current.Version) { }
+
+    // Keep the preceding illustration available for release-history verification.
+    public UpdateFeaturePreview(string version)
     {
+        _browserChoicePreview = version == "1.4.3";
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
                  ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         SetStyle(ControlStyles.Selectable, false);
@@ -19,6 +24,14 @@ internal sealed class UpdateFeaturePreview : Control
         BackColor = Color.White;
         TabStop = false;
         AccessibleRole = AccessibleRole.Graphic;
+        if (_browserChoicePreview)
+        {
+            AccessibleName = "크롬 또는 엣지로 로그인하고 연결하기";
+            AccessibleDescription = "설정의 로그인 브라우저에서 Chrome 또는 Edge를 선택합니다. "
+                + "원클릭의 로그인 버튼으로 선택한 브라우저를 열고 로그인한 뒤 연결을 누릅니다. "
+                + "로그인·인증서 선택과 최종 상신·결재는 사용자가 직접 진행합니다.";
+            return;
+        }
         AccessibleName = "교외체험학습 보고서 미상신 알림";
         AccessibleDescription = "아침에 연결하면 교외체험학습 미상신 보고서를 먼저 확인합니다. "
             + "미확인 알림이 있으면 설정 옆 종 버튼에 빨간 점이 표시됩니다. "
@@ -34,6 +47,11 @@ internal sealed class UpdateFeaturePreview : Control
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.Clear(BackColor);
         var scale = Math.Min(Width / 532f, Height / 299f);
+        if (_browserChoicePreview)
+        {
+            DrawBrowserChoice(graphics, scale);
+            return;
+        }
         Rectangle R(float x, float y, float width, float height) => new(
             (int)Math.Round(x * scale), (int)Math.Round(y * scale),
             (int)Math.Round(width * scale), (int)Math.Round(height * scale));
@@ -94,6 +112,74 @@ internal sealed class UpdateFeaturePreview : Control
         DrawText(graphics, "이후 10분마다 확인 · 같은 보고서는 중복 알림 없음",
             R(24, 265, 484, 18), 11 * scale, Muted,
             alignment: TextFormatFlags.HorizontalCenter);
+    }
+
+    private static void DrawBrowserChoice(Graphics graphics, float scale)
+    {
+        Rectangle R(float x, float y, float width, float height) => new(
+            (int)Math.Round(x * scale), (int)Math.Round(y * scale),
+            (int)Math.Round(width * scale), (int)Math.Round(height * scale));
+        using (var background = new SolidBrush(Color.FromArgb(247, 249, 252)))
+        using (var border = new Pen(Color.FromArgb(226, 232, 240), scale))
+        using (var card = RoundedRectangle(new RectangleF(scale / 2, scale / 2,
+            531 * scale, 298 * scale), 10 * scale))
+        {
+            graphics.FillPath(background, card);
+            graphics.DrawPath(border, card);
+        }
+        DrawText(graphics, "원하는 브라우저로 시작하세요", R(24, 18, 484, 28),
+            16 * scale, Ink, bold: true);
+
+        var borderColor = Color.FromArgb(221, 228, 237);
+        DrawSurface(graphics, R(24, 68, 192, 146), Color.White, borderColor, 8 * scale);
+        DrawText(graphics, "1  브라우저 선택", R(36, 78, 168, 24), 14 * scale, Ink, bold: true);
+        DrawText(graphics, "설정 > 로그인 브라우저", R(36, 111, 168, 20), 11 * scale, Muted);
+        DrawSurface(graphics, R(36, 146, 80, 36), Color.FromArgb(237, 245, 255),
+            Color.FromArgb(120, 163, 221), 6 * scale);
+        DrawText(graphics, "Chrome", R(40, 150, 72, 28), 13 * scale, Blue, bold: true,
+            alignment: TextFormatFlags.HorizontalCenter);
+        DrawSurface(graphics, R(124, 146, 80, 36), Color.FromArgb(247, 249, 252),
+            borderColor, 6 * scale);
+        DrawText(graphics, "Edge", R(128, 150, 72, 28), 13 * scale, Ink,
+            alignment: TextFormatFlags.HorizontalCenter);
+
+        DrawSurface(graphics, R(244, 68, 120, 146), Color.White, borderColor, 8 * scale);
+        DrawText(graphics, "2  로그인", R(254, 78, 100, 24), 14 * scale, Ink, bold: true);
+        DrawText(graphics, "선택한 브라우저", R(250, 111, 108, 20), 11 * scale, Muted,
+            alignment: TextFormatFlags.HorizontalCenter);
+        DrawSurface(graphics, R(260, 145, 88, 34), Color.FromArgb(49, 124, 213),
+            Color.FromArgb(49, 124, 213), 5 * scale);
+        DrawText(graphics, "로그인", R(264, 148, 80, 28), 13 * scale, Color.White, bold: true,
+            alignment: TextFormatFlags.HorizontalCenter);
+        DrawText(graphics, "로그인은 직접 진행", R(248, 185, 112, 18), 10 * scale, Muted,
+            alignment: TextFormatFlags.HorizontalCenter);
+
+        DrawSurface(graphics, R(392, 68, 116, 146), Color.White, borderColor, 8 * scale);
+        DrawText(graphics, "3  연결", R(404, 78, 92, 24), 14 * scale, Ink, bold: true);
+        DrawText(graphics, "로그인을 마친 뒤", R(398, 111, 104, 20), 11 * scale, Muted,
+            alignment: TextFormatFlags.HorizontalCenter);
+        DrawSurface(graphics, R(406, 145, 88, 34), Color.FromArgb(45, 162, 126),
+            Color.FromArgb(45, 162, 126), 5 * scale);
+        DrawText(graphics, "연결", R(410, 148, 80, 28), 13 * scale, Color.White, bold: true,
+            alignment: TextFormatFlags.HorizontalCenter);
+        DrawText(graphics, "업무 버튼 사용", R(400, 185, 100, 18), 10 * scale, Muted,
+            alignment: TextFormatFlags.HorizontalCenter);
+
+        using (var arrow = new Pen(Blue, 2 * scale))
+        {
+            arrow.StartCap = LineCap.Round;
+            arrow.EndCap = LineCap.Round;
+            foreach (var x in new[] { 222, 370 })
+            {
+                graphics.DrawLine(arrow, x * scale, 141 * scale, (x + 15) * scale, 141 * scale);
+                graphics.DrawLine(arrow, (x + 10) * scale, 136 * scale, (x + 15) * scale, 141 * scale);
+                graphics.DrawLine(arrow, (x + 10) * scale, 146 * scale, (x + 15) * scale, 141 * scale);
+            }
+        }
+        DrawSurface(graphics, R(24, 234, 484, 42), Color.FromArgb(237, 245, 255),
+            Color.FromArgb(202, 220, 245), 6 * scale);
+        DrawText(graphics, "로그인 · 인증서 선택 · 최종 상신은 직접 진행합니다.", R(34, 241, 464, 28),
+            12 * scale, Blue, alignment: TextFormatFlags.HorizontalCenter);
     }
 
     private static void DrawSystemIcon(Graphics graphics, string glyph, Rectangle bounds, float scale)

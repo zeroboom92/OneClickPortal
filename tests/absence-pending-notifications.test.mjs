@@ -18,7 +18,7 @@ test('pending absence reports remind daily, deduplicate durably and keep only pr
       await writeFile(join(directory, 'Probe.csproj'), `<Project Sdk="Microsoft.NET.Sdk">
         <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
         <ItemGroup><Compile Include="${xml(resolve(root, 'NotificationCenter.cs'))}" Link="NotificationCenter.cs" />
-        </ItemGroup>
+          </ItemGroup>
       </Project>`);
       await writeFile(join(directory, 'Program.cs'), probe);
       const result = await run('dotnet', ['run', '--project', join(directory, 'Probe.csproj'), '--configuration', 'Release'],
@@ -34,6 +34,7 @@ test('pending absence reports remind daily, deduplicate durably and keep only pr
 const probe = String.raw`
 using BrowserThumbnailPrototype;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 void Check(bool passed, string message) { if (!passed) throw new Exception(message); }
 var probeRoot = Path.Combine(Path.GetTempPath(), "oneclick-pending-absence-data-" + Guid.NewGuid().ToString("N"));
@@ -73,6 +74,8 @@ try
     using (var json = JsonDocument.Parse(saved))
     {
         Check(json.RootElement.GetProperty("Version").GetInt32() == 1, "v1 compatibility changed.");
+        Check(json.RootElement.GetProperty("PendingAbsenceQueryVersion").GetInt32() == 1,
+            "The screen-period query version was not persisted.");
         var days = json.RootElement.GetProperty("NotifiedPendingAbsenceDays");
         Check(days.GetArrayLength() == 1 && days[0].GetProperty("Date").GetString() == "2026-10-22",
             "Korea observation date missing.");
@@ -133,6 +136,111 @@ try
     Check(legacy.Entries.Count == 3 && legacy.ObservePendingFieldTripReports([a], scope, now).Count == 0
         && legacy.ObservePendingAbsenceReports([a, b, c], scope, now).Count == 0,
         "Upgraded storage lost existing history or report deduplication.");
+
+    string SeedAnnualHistory(string name, bool explicitZero = false)
+    {
+        var path = Store(name);
+        var annual = new NotificationCenter(path);
+        annual.ObservePendingAbsenceReports([a, b, c, .. Enumerable.Range(1, 5)
+            .Select(index => new NotificationSourceItem("OLD-PERIOD-" + index, "PRIVATE-OLD-PERIOD"))], scope, now);
+        annual.ObservePendingFieldTripReports([d], scope, now.AddMinutes(1));
+        annual.ObserveCount(NotificationKind.Approval, 0, scope, now);
+        annual.ObserveCount(NotificationKind.Approval, 1, scope, now.AddMinutes(2));
+        annual.ObserveCount(NotificationKind.Absence, 0, scope, now);
+        annual.ObserveCount(NotificationKind.Absence, 2, scope, now.AddMinutes(3));
+        annual.MarkRead(annual.Entries.Single(entry => entry.Kind == NotificationKind.Absence).Id);
+        var data = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        if (explicitZero) data["PendingAbsenceQueryVersion"] = 0;
+        else data.Remove("PendingAbsenceQueryVersion");
+        File.WriteAllText(path, data.ToJsonString());
+        return path;
+    }
+    int QueryVersion(string path) => JsonNode.Parse(File.ReadAllText(path))!["PendingAbsenceQueryVersion"]?.GetValue<int>() ?? 0;
+    string[] OtherNotifications(NotificationCenter value) => value.Entries
+        .Where(entry => entry.Kind != NotificationKind.AbsencePending)
+        .Select(entry => JsonSerializer.Serialize(entry)).ToArray();
+
+    foreach (var explicitZero in new[] { false, true })
+    {
+        var migrationPath = SeedAnnualHistory("annual-correction-" + explicitZero, explicitZero);
+        var originalAnnual = File.ReadAllText(migrationPath);
+        var correction = new NotificationCenter(migrationPath);
+        var unchangedOther = OtherNotifications(correction);
+        Check(correction.Entries.Single(entry => entry.Kind == NotificationKind.AbsencePending).ItemCount == 8
+            && QueryVersion(migrationPath) == 0, "Loading legacy data prematurely corrected unverified counts.");
+        Check(correction.ObservePendingAbsenceReports(null, scope, now).Count == 0
+            && correction.ObservePendingAbsenceReports([a, null!], scope, now).Count == 0
+            && correction.ObservePendingAbsenceReports([a, b, c], " ", now).Count == 0
+            && File.ReadAllText(migrationPath) == originalAnnual,
+            "An invalid or failed source observation migrated annual history.");
+        var corrected = correction.ObservePendingAbsenceReports([a, b, c], scope, now).Single();
+        Check(corrected.ItemCount == 3 && correction.Entries.Single(entry => entry.Kind == NotificationKind.AbsencePending).Id == corrected.Id
+            && QueryVersion(migrationPath) == 1 && OtherNotifications(correction).SequenceEqual(unchangedOther),
+            "The first complete period query did not replace eight annual absences with three while preserving unrelated history.");
+        Check(correction.ObservePendingFieldTripReports([d], scope, now).Count == 0,
+            "Correcting absence history discarded field-trip report keys.");
+        using (var json = JsonDocument.Parse(File.ReadAllText(migrationPath)))
+            Check(json.RootElement.GetProperty("Version").GetInt32() == 1
+                && json.RootElement.GetProperty("NotifiedPendingAbsenceDays")[0].GetProperty("Fingerprints").GetArrayLength() == 3,
+                "Correction retained the old annual keys or changed the storage schema.");
+        var correctionRestart = new NotificationCenter(migrationPath);
+        Check(correctionRestart.ObservePendingAbsenceReports([a, b, c], scope, now).Count == 0
+            && correctionRestart.Entries.Single(entry => entry.Kind == NotificationKind.AbsencePending).ItemCount == 3
+            && OtherNotifications(correctionRestart).SequenceEqual(unchangedOther),
+            "Restart repeated the correction or lost unrelated history.");
+    }
+
+    var zeroMigrationPath = SeedAnnualHistory("annual-zero");
+    var zeroMigration = new NotificationCenter(zeroMigrationPath);
+    var zeroOther = OtherNotifications(zeroMigration);
+    var zeroChanges = 0;
+    zeroMigration.Changed += (_, _) => zeroChanges++;
+    Check(zeroMigration.ObservePendingAbsenceReports([], scope, now).Count == 0 && zeroChanges == 1
+        && !zeroMigration.Entries.Any(entry => entry.Kind == NotificationKind.AbsencePending)
+        && OtherNotifications(zeroMigration).SequenceEqual(zeroOther) && QueryVersion(zeroMigrationPath) == 1,
+        "A successful empty period did not retire the old eight-count notification durably.");
+    zeroMigration = new NotificationCenter(zeroMigrationPath);
+    Check(zeroMigration.ObservePendingAbsenceReports([], scope, now).Count == 0
+        && zeroMigration.ObservePendingAbsenceReports([a], scope, now).Single().ItemCount == 1,
+        "An empty correction repeated on restart or hid a later pending report.");
+
+    foreach (var emptyCorrection in new[] { false, true })
+    {
+        var correctionPath = SeedAnnualHistory("annual-rollback-" + emptyCorrection);
+        var failedCorrection = new NotificationCenter(correctionPath);
+        var beforeCorrection = File.ReadAllText(correctionPath);
+        var priorCorrectionEntries = failedCorrection.Entries.Select(entry => JsonSerializer.Serialize(entry)).ToArray();
+        NotificationSourceItem[] correctedItems = emptyCorrection ? [] : [a, b, c];
+        using (var locked = new FileStream(correctionPath, FileMode.Open, FileAccess.Read, FileShare.None))
+            Check(failedCorrection.ObservePendingAbsenceReports(correctedItems, scope, now).Count == 0,
+                "A correction popup appeared before its keys and marker were durable.");
+        Check(failedCorrection.HasPersistenceError && File.ReadAllText(correctionPath) == beforeCorrection
+            && failedCorrection.Entries.Select(entry => JsonSerializer.Serialize(entry)).SequenceEqual(priorCorrectionEntries)
+            && QueryVersion(correctionPath) == 0, "Failed migration did not roll back history, keys and version.");
+        var retriedCorrection = failedCorrection.ObservePendingAbsenceReports(correctedItems, scope, now);
+        Check(!failedCorrection.HasPersistenceError && QueryVersion(correctionPath) == 1
+            && (emptyCorrection ? retriedCorrection.Count == 0 && !failedCorrection.Entries.Any(entry => entry.Kind == NotificationKind.AbsencePending)
+                : retriedCorrection.Single().ItemCount == 3 && failedCorrection.Entries.Single(entry => entry.Kind == NotificationKind.AbsencePending).ItemCount == 3),
+            "Retry lost the uncommitted correction or retained the old eight-count notification.");
+        Check(new NotificationCenter(correctionPath).ObservePendingAbsenceReports(correctedItems, scope, now).Count == 0,
+            "A durably retried migration repeated after restart.");
+    }
+
+    var migrationReadPath = SeedAnnualHistory("annual-unreadable");
+    var migrationReadOriginal = File.ReadAllText(migrationReadPath);
+    NotificationCenter migrationUnreadable;
+    using (var locked = new FileStream(migrationReadPath, FileMode.Open, FileAccess.Read, FileShare.None))
+    {
+        migrationUnreadable = new NotificationCenter(migrationReadPath);
+        Check(migrationUnreadable.HasPersistenceError
+            && migrationUnreadable.ObservePendingAbsenceReports([a, b, c], scope, now).Count == 0,
+            "Unreadable annual history was migrated from an incomplete load.");
+    }
+    Check(migrationUnreadable.ObservePendingAbsenceReports([], scope, now).Count == 0
+        && File.ReadAllText(migrationReadPath) == migrationReadOriginal && QueryVersion(migrationReadPath) == 0,
+        "An unreadable annual store was replaced later in the same session.");
+    Check(new NotificationCenter(migrationReadPath).ObservePendingAbsenceReports([a, b, c], scope, now).Single().ItemCount == 3,
+        "Restart could not correct preserved annual history.");
 
     var retained = new NotificationCenter(Store("retained"));
     for (var index = 0; index < 45; index++)
