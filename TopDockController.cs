@@ -303,7 +303,6 @@ internal sealed class TopDockController : IDisposable, IMessageFilter
         var hit = WindowFromPoint(center);
         var coveringWindow = hit == IntPtr.Zero ? IntPtr.Zero : GetAncestor(hit, 2); // GA_ROOT
         if (topMost && (coveringWindow == IntPtr.Zero || coveringWindow == window)) return;
-        _handle.TopMost = true;
         SetWindowPos(window, new IntPtr(-1), 0, 0, 0, 0,
             0x0001 | 0x0002 | 0x0010 | 0x0200); // NOSIZE | NOMOVE | NOACTIVATE | NOOWNERZORDER
     }

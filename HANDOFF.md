@@ -2,6 +2,13 @@
 
 작성일: 2026-09-22
 
+## 1.4.3 첫 배포 검사 중단 및 초점 보완 (2026-10-26)
+
+- 첫 제품 커밋 `c9744dcc17726d792e28d7848261573d60a66095`의 워크플로 `40257012508`은 Debug 빌드 성공 후 Windows 검사 357개 중 손잡이 초점 유지 검사 1개가 실패해 게시 전에 중단됐습니다. 공개 파일은 생성되지 않았고 최신 공개는 v1.4.2입니다.
+- 실패 원인은 실제 제품 코드의 `EnsureHandleOnTop`에서 호출한 `Form.TopMost` setter입니다. [.NET 8 공식 소스](https://github.com/dotnet/winforms/blob/v8.0.0/src/System.Windows.Forms/src/System/Windows/Forms/Form.cs#L1998-L2012)의 setter는 같은 true를 대입해도 NOACTIVATE 없이 SetWindowPos를 호출하므로 뒤의 안전한 호출 전에 초점을 가져올 수 있습니다. 해당 중복 setter를 제거하고 기존 NOACTIVATE 호출만 사용합니다. 생성 시 설정한 managed TopMost=true는 유지됩니다. 기존 엄격한 초점 검사는 유지하며 운영체제의 전면 권한 제한으로 문제가 가려지지 않도록 실제 native 위치 변경 플래그도 검사합니다.
+- 승인된 Chrome 문구·그림·릴리스 설명은 바꾸지 않습니다. 아직 게시되지 않은 v1.4.3 태그를 수정 커밋으로 옮긴 후 Debug와 Windows 전체 검사를 통과해야 패키지 생성·게시를 다시 진행합니다. 첫 실패를 환경 차이나 검증 완료로 설명하지 않습니다.
+- 수정본의 Debug 빌드는 경고/오류0개, Windows 전체 검사는357개 통과·실패/생략0개이며 자체 포함 Release publish를 완료했습니다. 최종 DLL SHA256 `1DDBD51E68CDEDCEA33A22A27AD02B2A00CDDB1A3C82A8A0EC43447220C48EE8`입니다. 증거는 `tmp/release-1.4.3-verification/{debug-build-final.txt,full-regression-final.txt,publish-final.txt}`에 있습니다. 손잡이 검사는 과거 복구 호출 누락과 잘못된 TopMost setter를 각각 임시 소스에 재삽입하면 실패함을 확인합니다.
+
 ## 1.4.3 배포 승인 완료 — Chrome 지원 안내 (2026-10-26)
 
 - 새 안내 PNG와 준비된 배포 내용에 대해 사용자가 **`오케이. 이대로 1.4.3 배포해.`**라고 최종 승인했습니다. 승인된 문구·그림·릴리스 설명 그대로 정식 태그 워크플로 게시를 진행합니다. 아래 ‘미게시·검토 대기’는 승인 전 준비 이력이며 공개 완료 및 공개 산출물 검증 결과는 후속 기록으로 남깁니다.

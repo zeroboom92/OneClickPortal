@@ -44,6 +44,26 @@ test('the real dock handle recovers native topmost visibility without taking foc
         }));
       assert.equal(legacyResult.failed, true, 'The previous visibility behavior unexpectedly passed the native coverage regression.');
       assert.match(legacyResult.stderr, /A visible topmost handle remained behind another topmost window\./);
+
+      // Reintroducing Form.TopMost's activating setter must also fail, even when
+      // Windows foreground policy prevents an observable foreground transition.
+      const unsafeBehavior = currentSource.replace(
+        '        SetWindowPos(window, new IntPtr(-1),',
+        '        _handle.TopMost = true;\n        SetWindowPos(window, new IntPtr(-1),');
+      assert.notEqual(unsafeBehavior, currentSource, 'The native repair call for the unsafe-setter fixture was not found.');
+      await writeFile(join(directory, 'UnsafeTopDockController.txt'), unsafeBehavior);
+      await writeFile(join(directory, 'UnsafeProbe.csproj'), `<Project Sdk="Microsoft.NET.Sdk">
+        <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework>
+          <UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+          <EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>
+        <ItemGroup><Compile Include="Program.cs" /><Compile Include="UnsafeTopDockController.txt" Link="TopDockController.cs" /></ItemGroup>
+      </Project>`);
+      const unsafeResult = await promisify(execFile)('dotnet', ['run', '--project', join(directory, 'UnsafeProbe.csproj'), '--configuration', 'Release'],
+        {timeout:110_000, maxBuffer:1024 * 1024}).then(value => ({...value, failed:false}), error => ({
+          stdout:error.stdout ?? '', stderr:error.stderr ?? '', failed:true,
+        }));
+      assert.equal(unsafeResult.failed, true, 'The activating Form.TopMost setter unexpectedly passed the native focus regression.');
+      assert.match(unsafeResult.stderr, /Handle positioning omitted SWP_NOACTIVATE:/);
     } finally {
       assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
       assert.ok(basename(directory).startsWith('oneclick-top-dock-visibility-'));
@@ -106,6 +126,7 @@ internal static class Program
             TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
         Check(label.Width <= button.ClientSize.Width - 8 && label.Height <= button.ClientSize.Height - 4,
             "The collapsed label no longer fits inside the compact button.");
+        using var positionMonitor = new HandlePositionMonitor(handle.Handle);
 
         void Cover()
         {
@@ -122,7 +143,12 @@ internal static class Program
         void TickWithoutFocusChange()
         {
             var foreground = GetForegroundWindow();
-            Tick(dock);
+            positionMonitor.BeginTick();
+            try { Tick(dock); }
+            finally { positionMonitor.EndTick(); }
+            Check(positionMonitor.Flags.All(flags => (flags & 0x0010) != 0),
+                "Handle positioning omitted SWP_NOACTIVATE: "
+                    + string.Join(", ", positionMonitor.Flags.Select(flags => $"0x{flags:X}")));
             Check(GetForegroundWindow() == foreground, "Visibility repair took foreground focus.");
         }
 
@@ -130,6 +156,7 @@ internal static class Program
         Check(handle.Visible && handle.TopMost && IsTopmost(handle), "The covering case did not retain visible/topmost state.");
         TickWithoutFocusChange();
         Check(RootAtCenter(handle) == handle.Handle, "A visible topmost handle remained behind another topmost window.");
+        Check(positionMonitor.Flags.Count > 0, "The native position monitor did not observe visibility repair.");
 
         Cover();
         Demote();
@@ -250,6 +277,28 @@ internal static class Program
         value.Left + value.Width / 2, value.Top + value.Height / 2)), 2);
     private static nint GetWindowLong(nint handle, int index) => IntPtr.Size == 8
         ? GetWindowLongPtr64(handle, index) : new nint(GetWindowLong32(handle, index));
+    private sealed class HandlePositionMonitor : NativeWindow, IDisposable
+    {
+        private bool _watching;
+        public List<uint> Flags { get; } = [];
+        public HandlePositionMonitor(nint handle) => AssignHandle(handle);
+        public void BeginTick() { Flags.Clear(); _watching = true; }
+        public void EndTick() => _watching = false;
+        protected override void WndProc(ref Message message)
+        {
+            if (_watching && message.Msg == 0x0046 && message.LParam != nint.Zero) // WM_WINDOWPOSCHANGING
+                Flags.Add(Marshal.PtrToStructure<WindowPosition>(message.LParam).Flags);
+            base.WndProc(ref message);
+        }
+        public void Dispose() => ReleaseHandle();
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowPosition
+    {
+        public nint Window, InsertAfter;
+        public int X, Y, Width, Height;
+        public uint Flags;
+    }
     [StructLayout(LayoutKind.Sequential)] private readonly record struct NativePoint(int X, int Y);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern nint GetWindowLongPtr64(nint handle, int index);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] private static extern int GetWindowLong32(nint handle, int index);
