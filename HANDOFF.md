@@ -2,6 +2,16 @@
 
 작성일: 2026-09-22
 
+## 1.4.3 정식 배포 및 공개 파일 검증 완료 (2026-10-26)
+
+- 사용자가 검토한 ‘이제 크롬에서도 사용할 수 있어요’ 문구·그림·릴리스 설명으로 [v1.4.3](https://github.com/zeroboom92/OneClickPortal/releases/tag/v1.4.3)을 한국 시간 **2026-10-26 11:13:28**에 공개했습니다. 최신 정식이며 draft/prerelease가 아닙니다. 제품/태그 커밋은 `f0b80d4b7091bdb940ad66fe832769183bfff5d5`입니다. 아래 준비 기록의 ‘미게시/검토 대기’는 당시 상태이며 이 완료 기록이 최종 상태입니다.
+- [최종 배포 워크플로 40257689340](https://github.com/zeroboom92/OneClickPortal/actions/runs/40257689340)의 Debug 빌드(경고/오류0개), Windows 전체 자동 검사 **357개 통과·실패/생략0개**, Release publish, 이전 공개1.4.2 다운로드, full/delta/Setup/portable 생성과 게시가 전부 성공했습니다. 첫 실패가 발견한 초점 문제를 수정한 뒤 미게시 태그를 lease 확인으로 이동했고 승인한 안내는 바꾸지 않았습니다.
+- 실제 공개 파일6개를 모두 내려받아 API의 크기·SHA256과 일치함을 확인했습니다. 공개 패키지 감사 **53개 전부 통과**: full/portable CRC·공통 payload 바이트·정식 경로·beta/소스/개인자료 제외·이전 공개1.4.2 기준 delta 대상/sidecar·피드/RELEASES·승인 노트·stable latest를 확인했습니다. 패키지 검사는 updater나 delta 실제 적용을 실행한 검사가 아닙니다.
+- 공개 DLL 검증 **173개 전부 통과**: 제품/안내1.4.3, Chrome 제목/2줄 요약/3개 항목·총31개 이력·이전30개 보존·새 안내 확인 선택·구1.4.0 그림 보존·기간reader/관찰자v2·손잡이 복구 호출·격리한 구8건→3건/0건 정정·재시작 중복 방지를 확인했습니다. 공개 PNG8개가 사용자가 승인한 로컬 그림과 모두 일치하며 reader Script는 줄바꿈 정규화 후 동일합니다.
+- 공개 full SHA256 `C1DC400A07D14289A86B4D20DF239EBF3C0D29EFEDD7A84FDA9A4607B8AE107F`, delta `A9ACEDFF6680B4E3D544DEDAAD5E48E834E98AB2DE0C345FFB1F3A61FA413333`, DLL `CD2978CE23CC80EBB6048D80713F0B87011B51CBD9ED2344FF20E38F86DC7088`입니다. 로컬/CI 빌드 환경 차이로 DLL 바이트 동일을 주장하지 않습니다.
+- 증거는 원본 개발폴더 `tmp/release-1.4.3-verification/`의 `final-workflow-status.json`, `final-workflow-job.json`, `final-ci-evidence.txt`, `public-verification-summary.json`, `package-verification-public.json`, `public/verification.json`, `public/renders/`에 있습니다. 최종 로컬 DLL도173개 검사 통과·승인 PNG8개 일치이며 `local-final/`에 기록했습니다. 앞선 `Releases/verified-1.4.3/`는 초점 추가 보완 전 검토본이므로 설치용으로 쓰지 않고 공개 파일을 사용합니다.
+- 실제 Edge의 최소화/최대화/F11 화면 검증과 장시간 실제 로그인 사용연장은 별도 미완료 범위입니다. 자동 검사·자체 Windows 창·공개 DLL 검증으로 이를 완료했다고 설명하지 않습니다. 공개 Setup/제품 진입점/updater를 실행하거나 현재 설치본·사용자 브라우저·설정을 바꾸지 않았습니다. 기존 설치본은 트레이에서 완전히 종료한 뒤 다시 실행하면 자동 업데이트를 확인합니다.
+
 ## 1.4.3 첫 배포 검사 중단 및 초점 보완 (2026-10-26)
 
 - 첫 제품 커밋 `c9744dcc17726d792e28d7848261573d60a66095`의 워크플로 `40257012508`은 Debug 빌드 성공 후 Windows 검사 357개 중 손잡이 초점 유지 검사 1개가 실패해 게시 전에 중단됐습니다. 공개 파일은 생성되지 않았고 최신 공개는 v1.4.2입니다.
