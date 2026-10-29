@@ -2,6 +2,15 @@
 
 작성일: 2026-09-22
 
+## 1.4.4 정식 배포 및 공개 파일 검증 완료 (2026-10-29)
+
+- 사용자가 최종 승인한 기존 앱 안내 유지·나이스 자동 사용연장/복구 안내·업무 브라우저 전면 표시 보완으로 [v1.4.4](https://github.com/zeroboom92/OneClickPortal/releases/tag/v1.4.4)를 한국 시간 **2026-10-29 11:49:06**에 공개했습니다. 현재 최신 정식이며 draft/prerelease가 아닙니다. 공개 배포 설명은 승인한 RELEASE_NOTES와 줄바꿈 정규화 후 같습니다. 제품/태그 커밋은 `86a2b241c666bce60be6a5a837a854b5f6895c18`입니다. 아래 미게시/검토 기록은 당시 상태이며 이 완료 기록이 최종 상태입니다.
+- [배포 워크플로40808086481](https://github.com/zeroboom92/OneClickPortal/actions/runs/40808086481)의 승인 head 일치·Debug 경고/오류0개·Windows 전체 **434개 통과·실패/취소/생략0개**를 전체 작업 로그에서 확인했습니다. Release publish·공개1.4.3 다운로드·full/delta/Setup/portable 생성·게시와 후처리가 모두 성공했습니다.
+- 공개 파일6개를 실제 내려받아 API 크기·SHA256과 전부 일치함을 확인했습니다. 공개 패키지 감사 **53/53**: CRC/full·portable 공통 payload/정식 경로·피드·승인 노트/개인자료·소스 제외/공개1.4.3 기준 delta·최신 정식을 확인했습니다. 실제 공개 DLL 검사 **178/178**, 기존 안내4PNG 바이트 일치·현재 NICE 연장/진단과 기존 업무 스크립트8개 줄바꿈 정규화 일치를 확인했습니다.
+- 공개 DLL의 브라우저 수정 보조 검사 **100개**도 통과했습니다. exact-PID 권한·native/탭 초점 확인·MainForm 정리 후 재확인·9개 HWND 전달·TopDock NOACTIVATE와 activating setter 부재를 확인했습니다. 핵심20개 메서드의 호출 순서/member 참조/상수 범위는 모두 일치합니다. 더 엄격한 전체 정규화 IL은13/20만 일치하며 나머지7개의 지역변수 저장/async 종료 정리 차이 원본을 보존했습니다. 전체 IL·모든 제어 분기·전체 DLL 동일을 주장하지 않습니다. 결과는 `foreground-dll/public-final/public-comparison.json`, 차이는 같은 폴더의 `comparison-diagnostics.json`입니다. 이 보조 검사는 메타데이터만 읽었고 제품 메서드·UI·native·브라우저·설정을 실행하지 않았습니다.
+- 공개 full SHA256 `3A43C0A06149BB9ED619384DDFD2E9D112D268BBE08F6CBA7D3ECD495E1EF638`, delta `44D60D94CB2BD02E239FE95382AB9F957206035746C15DF6A0557DC6410EC04E`, DLL `E6EF4A0AB843D9BCF4BC5A8F8FBA1DD7618FE87B8E3C729C73CBC4C48D50D449`입니다. 공개 DLL은 로컬490188...와 바이트가 다릅니다. 공개 자체 포함 런타임은 CI가 선택한8.0.32이며 로컬 검토본8.0.33과 구분합니다. 로컬 패키지를 공개 파일로 설명하거나 전체 DLL 바이트 동일을 주장하지 않습니다.
+- 근거는 이 worktree `tmp/release-1.4.4-verification/`의 `ci-final-status.json`, `ci-final-job.json`, `ci-verification-summary.json`, `ci-job-log.txt`, `public-release.json`, `public-asset-checksums.json`, `package-verification-public.json`, `public-verification-summary.json`, `public/verification.json`과 `public/renders/`입니다. 설치/updater/delta 실제 적용과 원래 나이스 서버N 직접 촉발·하루 전체·실제 Windows 잠금 유지 검증은 수행 완료로 설명하지 않습니다. 로그인·인증서·최종 상신은 조작하지 않았으며 현재 로컬 수정본은 별도 실행 상태입니다.
+
 ## 1.4.4 최종 게시 승인 — 브라우저 전면 표시 보완 포함 (2026-10-29)
 
 - 사용자가 앱 안내를 수정할 필요가 없다고 확인한 뒤 최종적으로 `1.4.4로 배포해,.`라고 게시를 승인했습니다. 승인된 기존1.4.3 안내 문구·그림·31개 이력·다시 보지 않기 선택은 유지합니다. 배포 설명은 나이스 자동 사용연장/복구 안내와 에듀파인 등 업무 버튼의 브라우저 전면 표시 보완입니다.
