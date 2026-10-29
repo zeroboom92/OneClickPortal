@@ -1439,15 +1439,16 @@ public sealed partial class MainForm : Form
                 .Where(result => _notifiedExpiredSystems.Add(result.SystemName))
                 .ToArray();
             var recoveryRequired = failed
-                .Where(result => result.Message.Contains("종료를 확인할 수 없습니다.", StringComparison.Ordinal)
+                .Where(result => (result.RequiresAttention || result.Message.Contains("종료를 확인할 수 없습니다.", StringComparison.Ordinal))
                     && _notifiedRecoverySystems.Add(result.SystemName))
                 .ToArray();
             if (newlyExpired.Length > 0)
             {
                 maximizeBrowser = true;
+                var noticeSystems = newlyExpired.Concat(recoveryRequired).ToArray();
                 sessionNotice = new SessionNotice(
-                    $"{string.Join("·", newlyExpired.Select(result => result.SystemName))} 재로그인 필요",
-                    string.Join("\r\n", newlyExpired.Select(result => result.Message)),
+                    $"{string.Join("·", noticeSystems.Select(result => result.SystemName))} {(recoveryRequired.Length > 0 ? "확인 필요" : "재로그인 필요")}",
+                    string.Join("\r\n", noticeSystems.Select(result => result.Message)),
                     IsSessionStatus: true);
             }
             else if (recoveryRequired.Length > 0)
@@ -1472,8 +1473,10 @@ public sealed partial class MainForm : Form
             }
             closeRecoveredSessionNotice = _sessionNoticeIsSessionStatus
                 && _confirmedExpiredSystems.Count == 0
+                && _notifiedRecoverySystems.Count == 0
                 && recoveryRequired.Length == 0
-                && failed.All(result => !result.Message.Contains("종료를 확인할 수 없습니다.", StringComparison.Ordinal));
+                && failed.All(result => !result.RequiresAttention
+                    && !result.Message.Contains("종료를 확인할 수 없습니다.", StringComparison.Ordinal));
 
             if (_pendingTaskKind is { } pendingTask
                 && _pendingTaskSystemName is { } pendingSystem

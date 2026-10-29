@@ -45,7 +45,8 @@ internal enum SessionSystemState
 internal sealed record SessionSystemResult(
     string SystemName,
     SessionSystemState State,
-    string Message);
+    string Message,
+    bool RequiresAttention = false);
 
 internal sealed partial class PortalWorkflowController
 {
@@ -309,6 +310,7 @@ internal sealed partial class PortalWorkflowController
             {
                 if (await TryCloseVisibleNiceSecurityShutdownDialogAsync(session, cancellationToken))
                 {
+                    await LogNiceSessionDiagnosticsAsync(session, cancellationToken);
                     AppLogger.Info(
                         "SessionRefresh",
                         "나이스 세션 종료 안내창을 닫고 세션 확인을 중단합니다.");
@@ -330,6 +332,12 @@ internal sealed partial class PortalWorkflowController
                 var niceExtensionResult = await session.EvaluateStringAsync(
                     NiceServerSessionExtensionScript(),
                     cancellationToken);
+                await LogNiceSessionDiagnosticsAsync(session, cancellationToken);
+                if (NiceSessionFailurePolicy.FromResult(niceExtensionResult) is { } niceFailure)
+                {
+                    AppLogger.Info("SessionRefresh", $"나이스: 사용연장을 확인하지 못해 복구가 필요합니다. 상태={niceExtensionResult}");
+                    return niceFailure;
+                }
                 if (string.Equals(niceExtensionResult, "Y", StringComparison.Ordinal))
                 {
                     AppLogger.Info(
@@ -346,7 +354,7 @@ internal sealed partial class PortalWorkflowController
 
                 if (string.Equals(niceExtensionResult, "N", StringComparison.Ordinal))
                 {
-                    AppLogger.Info("SessionRefresh", "나이스: 서버가 세션 DB 없음(N)을 반환했습니다.");
+                    AppLogger.Info("SessionRefresh", "나이스: 세션 DB 없음(N) 상태를 확인했습니다. 실제 응답 시각과 요청 번호는 진단 기록을 참조합니다.");
                     return new SessionSystemResult(
                         systemName,
                         SessionSystemState.Expired,
@@ -361,15 +369,6 @@ internal sealed partial class PortalWorkflowController
                         "SessionRefresh",
                         $"나이스: 서버 세션 연장 요청을 처리 중입니다. 상태={niceExtensionResult}");
                     return new SessionSystemResult(systemName, SessionSystemState.Pending, $"나이스 연장 요청 {niceExtensionResult}");
-                }
-
-                if (string.Equals(niceExtensionResult, "IN_FLIGHT_STALE", StringComparison.Ordinal)
-                    || string.Equals(niceExtensionResult, "LEGACY_IN_FLIGHT_STALE", StringComparison.Ordinal))
-                {
-                    AppLogger.Info(
-                        "SessionRefresh",
-                        "나이스: 공식 서버 세션 요청이 2분 넘게 끝나지 않았고 취소 완료를 확인할 수 없습니다. 중복 요청은 보내지 않습니다.");
-                    return new SessionSystemResult(systemName, SessionSystemState.Failed, "나이스 연장 요청이 응답하지 않습니다.");
                 }
 
                 if (string.Equals(niceExtensionResult, "AUTH_RESPONSE", StringComparison.Ordinal))
@@ -499,6 +498,23 @@ internal sealed partial class PortalWorkflowController
         }
     }
 
+    private static async Task LogNiceSessionDiagnosticsAsync(DevToolsSession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var json = await session.EvaluateStringAsync(NiceSessionDiagnostics.Script(), cancellationToken);
+            AppLogger.Info("NiceSessionDiagnostic", NiceSessionDiagnostics.Format(json));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            AppLogger.Info("NiceSessionDiagnostic", "{\"schema\":1,\"status\":\"UNAVAILABLE\"}");
+        }
+    }
+
     private static async Task LogEdufineSessionDiagnosticsAsync(DevToolsSession session, CancellationToken cancellationToken)
     {
         try
@@ -617,189 +633,294 @@ internal sealed partial class PortalWorkflowController
               const retryIntervalMs=60*1000;
               const staleRequestMs=2*60*1000;
               const now=Date.now();
-              const jquery=globalThis.jQuery||globalThis.$;
-              if(!jquery||typeof jquery.ajax!=='function')return 'NO_JQUERY';
-
               const getState=()=>{
                 const state=globalThis[stateKey]||(globalThis[stateKey]={
-                  inFlight:false,
-                  startedAt:0,
-                  completedAt:0,
-                  result:null,
-                  reported:false,
-                  request:null,
-                  legacyImported:false
+                  inFlight:false,startedAt:0,completedAt:0,result:null,reported:false,
+                  request:null,legacyImported:false
                 });
-                state.requestSequence=Number(state.requestSequence||0);
-                state.requestId=Number(state.requestId||0);
+                for(const key of ['requestSequence','requestId','bindingSequence']){
+                  if(!Number.isSafeInteger(state[key])||state[key]<0)state[key]=0;
+                }
                 return state;
               };
-              const resetTimer=()=>{
-                const mainApp=window.voMainApp;
-                if(mainApp?.hasAppMethod?.('setSessionTimerInit'))
-                  mainApp.callAppMethod('setSessionTimerInit');
-              };
-
-              if(!jquery.__oneClickOriginalAjaxV3){
-                const originalAjax=jquery.__oneClickOriginalAjaxV2||jquery.ajax;
-                jquery.__oneClickOriginalAjaxV3=originalAjax;
-                jquery.ajax=function(first,second){
-                  const settings=typeof first==='string'
-                    ?Object.assign({},second||{},{url:first})
-                    :Object.assign({},first||{});
-                  const url=String(settings.url||'');
-                  if(!url.includes('/sessionExtension.do'))
-                    return originalAjax.apply(this,arguments);
-
-                  const userSuccess=settings.success;
-                  const userError=settings.error;
-                  const userComplete=settings.complete;
-                  const context=settings.context||settings;
-                  const callCallbacks=(callbacks,args)=>{
-                    const list=Array.isArray(callbacks)?callbacks:[callbacks];
-                    for(const callback of list){
-                      if(typeof callback!=='function')continue;
-                      try{callback.apply(context,args);}catch{}
-                    }
-                  };
-                  const classifyFailure=(xhr,textStatus)=>{
-                    const reason=String(textStatus||'').toLowerCase();
-                    if(reason==='timeout')return 'REQUEST_TIMEOUT';
-                    if(reason==='abort')return 'REQUEST_ABORTED';
-                    const status=Number(xhr?.status||0);
-                    return status>0?`HTTP_${status}`:'NETWORK_ERROR';
-                  };
-                  const shared=getState();
-                  const legacyState=globalThis.__oneClickNiceServerKeepAliveV2;
-                  const pendingState=shared.inFlight
-                    ?shared
-                    :(legacyState?.inFlight?legacyState:null);
-                  if(pendingState){
-                    pendingState.request?.done?.(function(data,textStatus,xhr){
-                      callCallbacks(userSuccess,[data,textStatus,xhr]);
-                      callCallbacks(userComplete,[xhr,textStatus]);
-                    });
-                    pendingState.request?.fail?.(function(xhr,textStatus,errorThrown){
-                      callCallbacks(userError,[xhr,textStatus,errorThrown]);
-                      callCallbacks(userComplete,[xhr,textStatus]);
-                    });
-                    return pendingState.request;
-                  }
-
-                  let finished=false;
-                  const requestId=++shared.requestSequence;
-                  const finish=result=>{
-                    if(finished)return;
-                    finished=true;
-                    if(shared.requestId!==requestId)return;
-                    shared.inFlight=false;
-                    shared.result=result;
-                    shared.completedAt=Date.now();
-                    shared.reported=false;
-                    shared.request=null;
-                    if(result==='Y'){
-                      try{resetTimer();}catch{}
-                    }
-                  };
-
-                  shared.inFlight=true;
-                  shared.startedAt=Date.now();
-                  shared.completedAt=0;
-                  shared.result=null;
-                  shared.reported=false;
-                  shared.requestId=requestId;
-                  shared.ownerSource=settings.__oneClickSource==='program'?'program':'site';
-
-                  const recordSuccess=result=>{
-                    const raw=String(result??'').trim();
-                    let normalized=raw;
-                    try{
-                      const parsed=JSON.parse(raw);
-                      if(typeof parsed==='string')normalized=parsed.trim();
-                    }catch{}
-                    finish(normalized==='Y'||normalized==='N'
-                      ?normalized
-                      :(/<!doctype|<html|로그인|login/i.test(raw)
-                        ?'AUTH_RESPONSE':'UNEXPECTED_RESPONSE'));
-                  };
-                  settings.success=function(result,...rest){
-                    recordSuccess(result);
-                    callCallbacks(userSuccess,[result,...rest]);
-                  };
-                  settings.error=function(...args){
-                    finish(classifyFailure(args[0],args[1]));
-                    callCallbacks(userError,args);
-                  };
-                  settings.complete=function(...args){
-                    callCallbacks(userComplete,args);
-                  };
-
-                  try{
-                    const request=originalAjax.call(this,settings);
-                    // beforeSend cancellation can settle jqXHR without option callbacks.
-                    // Deferred handlers also observe completion when site callbacks throw.
-                    if(shared.inFlight)shared.request=request;
-                    request?.done?.(recordSuccess);
-                    request?.fail?.((xhr,textStatus)=>finish(classifyFailure(xhr,textStatus)));
-                    return request;
-                  }catch{
-                    finish('REQUEST_EXCEPTION');
-                    return null;
-                  }
-                };
-              }
-
               const state=getState();
+              if(state.result==='N'||state.serverResult==='N')state.terminalN=true;
+              const mainApp=()=>globalThis.window?.voMainApp;
+              const appUsable=app=>!!app&&app.disposed!==true;
+              const readRemaining=app=>{
+                try{
+                  const output=app?.lookup?.('optTime');
+                  const text=String(output?.value??output?.text??'').trim();
+                  const korean=/^(\d+)\s*분\s*(\d{1,2})\s*초$/.exec(text);
+                  const clock=/^(\d+):(\d{2})$/.exec(text);
+                  const match=korean||clock;
+                  if(!match||Number(match[2])>=60)return null;
+                  const remaining=Number(match[1])*60+Number(match[2]);
+                  return Number.isSafeInteger(remaining)&&remaining>=0?remaining:null;
+                }catch{return null;}
+              };
+              const diagnostic=(code,remaining=readRemaining(mainApp()))=>{
+                const allowed=['BINDING_INSTALLED','BINDING_REPAIRED','BINDING_FAILED',
+                  'REQUEST_START','RESPONSE_Y','RESPONSE_N','RESPONSE_ERROR',
+                  'TIMER_RESET_OK','TIMER_RESET_UNAVAILABLE','TIMER_RESET_FAILED',
+                  'TIMER_RESET_UNCONFIRMED','REQUEST_NOT_TRACKED'];
+                if(!allowed.includes(code))return;
+                const events=Array.isArray(state.diagnosticEvents)?state.diagnosticEvents:[];
+                state.diagnosticEvents=events.filter(event=>event&&allowed.includes(event.code)
+                  &&Number.isSafeInteger(event.at)&&event.at>=0
+                  &&(event.remaining===null||(Number.isSafeInteger(event.remaining)&&event.remaining>=0))
+                  &&Number.isSafeInteger(event.requestId)&&event.requestId>=0)
+                  .map(({at,code,remaining,requestId})=>({at,code,remaining,requestId})).slice(-15);
+                state.diagnosticEvents.push({at:Math.max(0,Math.trunc(Date.now())),code,
+                  remaining:Number.isSafeInteger(remaining)&&remaining>=0?remaining:null,
+                  requestId:state.requestId});
+              };
+              const resetTimer=()=>{
+                const app=mainApp();
+                state.timerResetAt=Math.max(0,Math.trunc(Date.now()));
+                state.timerResetApp=null;
+                let result='Y_RESET_UNAVAILABLE';
+                try{
+                  if(appUsable(app)&&typeof app.hasAppMethod==='function'
+                    &&typeof app.callAppMethod==='function'&&app.hasAppMethod('setSessionTimerInit')){
+                    app.callAppMethod('setSessionTimerInit');
+                    const remaining=readRemaining(app);
+                    let configured=null;
+                    try{
+                      const minutes=app.lookup?.('dmUserInfoSub')?.getValue?.('logSesnTime');
+                      if((typeof minutes==='number'||typeof minutes==='string')&&String(minutes).trim()!==''){
+                        const seconds=Number(minutes)*60;
+                        if(Number.isSafeInteger(seconds)&&seconds>0)configured=seconds;
+                      }
+                    }catch{}
+                    result=app===mainApp()&&appUsable(app)&&remaining>0&&configured!==null
+                      &&remaining<=configured&&remaining>=configured-2?'Y':'Y_RESET_UNCONFIRMED';
+                    if(result==='Y')state.timerResetApp=app;
+                  }
+                }catch{result='Y_RESET_FAILED';}
+                state.timerResetResult=result;
+                diagnostic(result==='Y'?'TIMER_RESET_OK':'TIMER_'+result.replace('Y_',''));
+                return result;
+              };
+              const jquery=globalThis.jQuery||globalThis.$;
+              const previous=jquery?.__oneClickAjaxPolicyV4;
+              const bindingHealthy=()=>!!jquery&&previous?.revision===4
+                &&jquery.ajax===previous.wrapper&&jquery.__oneClickAjaxWrapperV3===previous.wrapper;
+              let policy=previous;
+              if(!bindingHealthy()){
+                state.wrapperInstalled=false;
+                let originalAjax=null;
+                const current=jquery?.ajax;
+                if(typeof current==='function'){
+                  if(previous?.revision===4){
+                    // Only a known direct original can replace our wrapper safely.
+                    // An unknown outer wrapper may still delegate to ours; preserve it.
+                    if(current===previous.originalAjax)originalAjax=current;
+                    else if(current===previous.wrapper)originalAjax=previous.originalAjax;
+                  }else{
+                    const originalV3=jquery.__oneClickOriginalAjaxV3;
+                    const originalV2=jquery.__oneClickOriginalAjaxV2;
+                    const source=Function.prototype.toString.call(current);
+                    const legacyV3=typeof originalV3==='function'
+                      &&source.includes('legacyState=globalThis.__oneClickNiceServerKeepAliveV2')
+                      &&source.includes('const pendingState=shared.inFlight')
+                      &&source.includes('recordSuccess');
+                    const legacyV2=typeof originalV2==='function'&&!originalV3
+                      &&source.includes('canResetTimer')
+                      &&source.includes('if(shared.inFlight)return shared.request')
+                      &&source.includes('/sessionExtension.do');
+                    if(current===originalV3||current===originalV2)originalAjax=current;
+                    else if(legacyV3)originalAjax=originalV3;
+                    else if(legacyV2)originalAjax=originalV2;
+                    else if(!originalV3&&!originalV2)originalAjax=current;
+                  }
+                }
+                if(typeof originalAjax==='function'){
+                  const epoch=++state.bindingSequence;
+                  const wrapper=function(first,second){
+                    const settings=typeof first==='string'
+                      ?Object.assign({},second||{},{url:first}):Object.assign({},first||{});
+                    let sessionRequest=false;
+                    try{
+                      const parsed=new URL(String(settings.url||''),globalThis.location?.href);
+                      sessionRequest=parsed.origin===globalThis.location?.origin&&parsed.pathname==='/sessionExtension.do';
+                    }catch{}
+                    if(!sessionRequest)
+                      return originalAjax.apply(this,arguments);
+                    const userSuccess=settings.success,userError=settings.error,userComplete=settings.complete;
+                    const context=settings.context||settings;
+                    const callCallbacks=(callbacks,args)=>{
+                      if(Array.isArray(callbacks)){
+                        for(const callback of callbacks)callCallbacks(callback,args);
+                      }else if(typeof callbacks==='function'){
+                        try{callbacks.apply(context,args);}catch{}
+                      }
+                    };
+                    const classifyFailure=(xhr,textStatus)=>{
+                      const reason=String(textStatus||'').toLowerCase();
+                      if(reason==='timeout')return 'REQUEST_TIMEOUT';
+                      if(reason==='abort')return 'REQUEST_ABORTED';
+                      const status=Number(xhr?.status||0);
+                      return Number.isInteger(status)&&status>0&&status<=599?'HTTP_'+status:'NETWORK_ERROR';
+                    };
+                    const shared=getState();
+                    const legacy=globalThis.__oneClickNiceServerKeepAliveV2;
+                    const pending=shared.inFlight?shared:(legacy?.inFlight?legacy:null);
+                    if(pending){
+                      pending.request?.done?.((data,textStatus,xhr)=>{
+                        callCallbacks(userSuccess,[data,textStatus,xhr]);
+                        callCallbacks(userComplete,[xhr,textStatus]);
+                      });
+                      pending.request?.fail?.((xhr,textStatus,errorThrown)=>{
+                        callCallbacks(userError,[xhr,textStatus,errorThrown]);
+                        callCallbacks(userComplete,[xhr,textStatus]);
+                      });
+                      return pending.request;
+                    }
+                    let finished=false;
+                    const requestId=++shared.requestSequence;
+                    const finish=result=>{
+                      if(finished)return;
+                      finished=true;
+                      if(getState()!==shared||!shared.inFlight||shared.requestId!==requestId
+                        ||shared.activeRequestId!==requestId||shared.requestEpoch!==epoch)return;
+                      shared.inFlight=false;
+                      shared.activeRequestId=0;
+                      shared.serverResult=result;
+                      if(result==='N')shared.terminalN=true;
+                      shared.result=shared.terminalN?'N':result;
+                      shared.completedAt=Date.now();
+                      shared.reported=false;
+                      shared.request=null;
+                      shared.responseEpoch=epoch;
+                      shared.timerResetResult=null;
+                      shared.timerResetAt=0;
+                      shared.timerResetApp=null;
+                      diagnostic(result==='Y'?'RESPONSE_Y':result==='N'?'RESPONSE_N':'RESPONSE_ERROR');
+                      if(result==='Y'&&!shared.terminalN)shared.result=resetTimer();
+                    };
+                    shared.inFlight=true;
+                    shared.startedAt=Date.now();
+                    shared.completedAt=0;
+                    if(!shared.terminalN){shared.result=null;shared.serverResult=null;}
+                    shared.reported=false;
+                    shared.requestId=requestId;
+                    shared.activeRequestId=requestId;
+                    shared.requestEpoch=epoch;
+                    shared.ownerSource=settings.__oneClickSource==='program'?'program':'site';
+                    diagnostic('REQUEST_START');
+                    const recordSuccess=result=>{
+                      const raw=String(result??'').trim();
+                      let normalized=raw;
+                      try{const parsed=JSON.parse(raw);if(typeof parsed==='string')normalized=parsed.trim();}catch{}
+                      finish(normalized==='Y'||normalized==='N'?normalized
+                        :(/<!doctype|<html|로그인|login/i.test(raw)?'AUTH_RESPONSE':'UNEXPECTED_RESPONSE'));
+                    };
+                    settings.success=function(result,...rest){
+                      recordSuccess(result);callCallbacks(userSuccess,[result,...rest]);
+                    };
+                    settings.error=function(...args){
+                      finish(classifyFailure(args[0],args[1]));callCallbacks(userError,args);
+                    };
+                    settings.complete=function(...args){callCallbacks(userComplete,args);};
+                    try{
+                      const request=originalAjax.call(this,settings);
+                      if(shared.inFlight&&shared.activeRequestId===requestId)shared.request=request;
+                      request?.done?.(recordSuccess);
+                      request?.fail?.((xhr,textStatus)=>finish(classifyFailure(xhr,textStatus)));
+                      return request;
+                    }catch{finish('REQUEST_EXCEPTION');return null;}
+                  };
+                  const repaired=!!previous||!!jquery.__oneClickOriginalAjaxV3||!!jquery.__oneClickOriginalAjaxV2;
+                  const bindingKeys=['ajax','__oneClickAjaxPolicyV4','__oneClickAjaxWrapperV3','__oneClickOriginalAjaxV3'];
+                  const bindingDescriptors=bindingKeys.map(key=>Object.getOwnPropertyDescriptor(jquery,key));
+                  try{
+                    jquery.ajax=wrapper;
+                    if(jquery.ajax===wrapper){
+                      policy={revision:4,epoch,wrapper,originalAjax};
+                      jquery.__oneClickAjaxPolicyV4=policy;
+                      jquery.__oneClickAjaxWrapperV3=wrapper;
+                      jquery.__oneClickOriginalAjaxV3=originalAjax;
+                    }
+                  }catch{}
+                  state.wrapperInstalled=jquery.ajax===wrapper&&jquery.__oneClickAjaxPolicyV4===policy
+                    &&jquery.__oneClickAjaxWrapperV3===wrapper;
+                  if(!state.wrapperInstalled){
+                    for(let index=bindingKeys.length-1;index>=0;index--){
+                      try{
+                        if(bindingDescriptors[index])Object.defineProperty(jquery,bindingKeys[index],bindingDescriptors[index]);
+                        else delete jquery[bindingKeys[index]];
+                      }catch{}
+                    }
+                  }
+                  state.wrapperRepaired=state.wrapperInstalled&&repaired;
+                  diagnostic(state.wrapperInstalled?(repaired?'BINDING_REPAIRED':'BINDING_INSTALLED'):'BINDING_FAILED');
+                }else diagnostic('BINDING_FAILED');
+              }else state.wrapperInstalled=true;
+
               const legacy=globalThis.__oneClickNiceServerKeepAliveV2;
               if(legacy&&!state.legacyImported){
                 if(legacy.inFlight){
-                  return now-Number(legacy.startedAt||now)>staleRequestMs
-                    ?'LEGACY_IN_FLIGHT_STALE':'LEGACY_IN_FLIGHT';
+                  if(!state.wrapperInstalled)return typeof jquery?.ajax==='function'?'BINDING_UNAVAILABLE':'NO_JQUERY';
+                  return now-Number(legacy.startedAt||now)>staleRequestMs?'LEGACY_IN_FLIGHT_STALE':'LEGACY_IN_FLIGHT';
                 }
                 state.legacyImported=true;
                 if(legacy.completedAt&&legacy.result){
                   state.completedAt=Number(legacy.completedAt);
-                  state.result=String(legacy.result);
+                  state.result=legacy.result==='Y'||legacy.result==='N'?legacy.result:'UNEXPECTED_RESPONSE';
+                  state.serverResult=state.result;
+                  if(state.result==='N')state.terminalN=true;
                   state.reported=Boolean(legacy.reported);
+                  state.responseEpoch=0;
                 }
               }
+              // A server N remains terminal even when timer or binding verification fails.
+              if(state.terminalN||state.result==='N'||state.serverResult==='N')return 'N';
+              if(!state.wrapperInstalled)return typeof jquery?.ajax==='function'?'BINDING_UNAVAILABLE':'NO_JQUERY';
               if(state.inFlight){
                 if(now-state.startedAt<=staleRequestMs)return 'IN_FLIGHT';
                 const request=state.request;
-                // Abort the old transport before allowing any retry. Never overlap requests.
                 if(typeof request?.abort!=='function')return 'IN_FLIGHT_STALE';
                 try{request.abort('timeout');}catch{return 'IN_FLIGHT_STALE';}
                 if(state.inFlight){
                   const settled=request.state?.();
                   if(settled!=='rejected'&&settled!=='resolved')return 'IN_FLIGHT_STALE';
-                  state.inFlight=false;
-                  state.request=null;
-                  state.result='REQUEST_TIMEOUT';
-                  state.completedAt=now;
-                  state.reported=false;
+                  state.inFlight=false;state.activeRequestId=0;state.request=null;
+                  state.result='REQUEST_TIMEOUT';state.serverResult='REQUEST_TIMEOUT';
+                  state.completedAt=now;state.reported=false;
+                  diagnostic('RESPONSE_ERROR');
                 }
               }
-
               if(state.completedAt&&state.result){
-                if(state.result==='N')return 'N';
-                if(!state.reported){
-                  state.reported=true;
-                  return state.result;
+                if(state.result==='Y'){
+                  const owned=state.responseEpoch===policy.epoch;
+                  const appUnchanged=appUsable(state.timerResetApp)&&state.timerResetApp===mainApp();
+                  if(owned&&appUnchanged&&state.timerResetResult==='Y'&&readRemaining(mainApp())>0){
+                    if(now>=state.completedAt&&now-state.completedAt<successIntervalMs){
+                      if(!state.reported){state.reported=true;return 'Y';}
+                      return 'Y_RECENT';
+                    }
+                  }else if(owned&&appUnchanged){
+                    state.result='Y_RESET_UNCONFIRMED';state.timerResetResult=state.result;
+                    state.reported=false;diagnostic('TIMER_RESET_UNCONFIRMED');
+                  }
+                  // Upgrade, repaired bindings and replaced apps require a new owned response.
                 }
-                const waitMs=state.result==='Y'?successIntervalMs:retryIntervalMs;
-                if(now-state.completedAt<waitMs)
-                  return state.result==='Y'?'Y_RECENT':state.result;
+                if(state.result!=='Y'&&state.responseEpoch===policy.epoch){
+                  if(!state.reported){state.reported=true;return state.result;}
+                  if(now>=state.completedAt&&now-state.completedAt<retryIntervalMs)return state.result;
+                }
               }
-
-              jquery.ajax({
-                async:true,
-                timeout:staleRequestMs,
-                dataType:'text',
-                type:'post',
-                url:'/sessionExtension.do',
-                __oneClickSource:'program'
-              });
-              return 'STARTED';
+              const previousSequence=state.requestSequence;
+              jquery.ajax({async:true,timeout:staleRequestMs,dataType:'text',type:'post',
+                url:'/sessionExtension.do',__oneClickSource:'program'});
+              if(state.requestSequence<=previousSequence){
+                diagnostic('REQUEST_NOT_TRACKED');return 'REQUEST_NOT_TRACKED';
+              }
+              if(jquery.ajax!==policy.wrapper){
+                state.wrapperInstalled=false;diagnostic('BINDING_FAILED');return 'BINDING_UNAVAILABLE';
+              }
+              return state.inFlight?'STARTED':(state.result||'REQUEST_EXCEPTION');
             })()
             """;
     }
