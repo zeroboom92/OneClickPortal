@@ -21,7 +21,7 @@ test('foreground handoff verifies the exact window instead of trusting an activa
   { timeout: 180_000 }, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'oneclick-browser-foreground-'));
     try {
-      const source = await readFile(resolve(root, 'BrowserForeground.cs'), 'utf8');
+      const source = (await readFile(resolve(root, 'BrowserForeground.cs'), 'utf8')).replaceAll('\r\n', '\n');
       await writeFile(join(directory, 'BrowserForeground.cs'), source);
       await writeFile(join(directory, 'Probe.csproj'), `<Project Sdk="Microsoft.NET.Sdk">
         <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
