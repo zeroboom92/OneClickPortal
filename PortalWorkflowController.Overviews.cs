@@ -32,7 +32,7 @@ internal sealed partial class PortalWorkflowController
                 // for an unrelated page-shape heuristic only delays showing the selected tab.
                 await PrepareBrowserForUserAsync(session, cancellationToken);
                 return new WorkflowResult("결재대기 탭을 선택했습니다. 문서 확인과 최종 결재는 직접 진행해 주세요.",
-                    KeepActivatedBrowser: true);
+                    ForegroundWindow: session.PresentedWindowHandle, KeepActivatedBrowser: true);
             }
         }
         _reportProgress($"{taskName}: {jobName} · {topMenu} 이동 중");
@@ -70,7 +70,7 @@ internal sealed partial class PortalWorkflowController
             // grid can continue loading visibly without an extra 5-second readiness gate.
             await PrepareBrowserForUserAsync(session, cancellationToken);
             return new WorkflowResult("결재대기 메뉴를 선택했습니다. 문서 확인과 최종 결재는 직접 진행해 주세요.",
-                KeepActivatedBrowser: true);
+                ForegroundWindow: session.PresentedWindowHandle, KeepActivatedBrowser: true);
         }
 
         _reportProgress("예산: 현재 조회 조건으로 조회 중");
@@ -96,7 +96,7 @@ internal sealed partial class PortalWorkflowController
         return new WorkflowResult(queried
             ? "현재 조건으로 예산 조회 버튼을 눌렀습니다. 화면에서 조회 결과를 확인해 주세요."
             : "예산 메뉴를 선택했습니다. 조회 버튼을 자동 확인하지 못했으므로 열린 화면에서 조회 결과를 확인해 주세요.",
-            KeepActivatedBrowser: true);
+            ForegroundWindow: session.PresentedWindowHandle, KeepActivatedBrowser: true);
     }
 
     private static async Task<bool> ClickOverviewElementOnceAsync(

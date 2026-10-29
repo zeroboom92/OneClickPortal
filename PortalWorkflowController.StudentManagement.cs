@@ -58,7 +58,7 @@ internal sealed partial class PortalWorkflowController
         await QueryStudentManagementAsync(kind, cancellationToken);
         await PrepareBrowserForUserAsync(session, cancellationToken);
         return new WorkflowResult($"{title} 조회가 완료되었습니다. 최종 상신은 직접 진행합니다.",
-            KeepActivatedBrowser: true);
+            ForegroundWindow: session.PresentedWindowHandle, KeepActivatedBrowser: true);
     }
 
     internal async Task QueryStudentManagementAsync(PortalTaskKind kind, CancellationToken cancellationToken)

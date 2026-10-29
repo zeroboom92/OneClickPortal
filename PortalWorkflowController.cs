@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 
 namespace BrowserThumbnailPrototype;
 
@@ -1538,7 +1538,7 @@ internal sealed partial class PortalWorkflowController
                 await PrepareBrowserForUserAsync(session, cancellationToken);
                 return new WorkflowResult(
                     $"이미 열려 있는 {displayName} 입력 화면을 표시했습니다. 내용을 계속 입력해 주세요.",
-                    KeepActivatedBrowser: true);
+                    ForegroundWindow: session.PresentedWindowHandle, KeepActivatedBrowser: true);
             }
             orphanedCurrentDialog = true;
         }
@@ -1574,7 +1574,7 @@ internal sealed partial class PortalWorkflowController
         await PrepareBrowserForUserAsync(session, cancellationToken);
         return new WorkflowResult(
             $"{displayName} 입력 화면을 열었습니다. 내용을 입력한 뒤 승인요청은 직접 눌러 주세요.",
-            KeepActivatedBrowser: true);
+            ForegroundWindow: session.PresentedWindowHandle, KeepActivatedBrowser: true);
     }
     private async Task<WorkflowResult> OpenSystemHomeAsync(
         string displayName,
@@ -1615,7 +1615,7 @@ internal sealed partial class PortalWorkflowController
         await PrepareBrowserForUserAsync(session, cancellationToken);
         return new WorkflowResult(
             $"{displayName} 화면을 열었습니다.",
-            KeepActivatedBrowser: true);
+            ForegroundWindow: session.PresentedWindowHandle, KeepActivatedBrowser: true);
     }
 
     private async Task<WorkflowResult> OpenDraftAsync(CancellationToken cancellationToken)
@@ -1704,18 +1704,28 @@ internal sealed partial class PortalWorkflowController
         await PrepareBrowserForUserAsync(session, cancellationToken);
         return new WorkflowResult(
             "품의등록 화면을 열었습니다. 내용을 입력한 뒤 결재요청은 직접 눌러 주세요.",
-            KeepActivatedBrowser: true);
+            ForegroundWindow: session.PresentedWindowHandle, KeepActivatedBrowser: true);
     }
 
     private static async Task PrepareBrowserForUserAsync(
         DevToolsSession session,
         CancellationToken cancellationToken)
     {
-        // A tab can belong to a different browser window from the connected portal.
-        // Restore that target's window before requesting foreground activation.
-        await session.ActivateTargetAsync(cancellationToken);
-        await session.MaximizeTargetWindowAsync(cancellationToken);
-        await session.BringToFrontAsync(cancellationToken);
+        try
+        {
+            // A tab can belong to a different browser window from the connected portal.
+            // Verify native foreground and tab focus, not only CDP acknowledgements.
+            await session.ActivateTargetAsync(cancellationToken);
+            await session.MaximizeTargetWindowAsync(cancellationToken);
+            await session.BringToFrontAsync(cancellationToken);
+            await session.ConfirmForegroundWindowAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (BrowserForegroundException) { throw; }
+        catch (Exception exception)
+        {
+            throw new BrowserForegroundException("브라우저 업무 화면을 앞으로 표시하지 못했습니다. 열린 창을 확인한 뒤 다시 눌러 주세요.", exception);
+        }
     }
 
     private async Task PrepareActivatedTargetForBackgroundAsync(CancellationToken cancellationToken)

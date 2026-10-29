@@ -1272,6 +1272,10 @@ public sealed partial class MainForm : Form
             return;
         }
 
+        // Preserve the user's click authority before the first asynchronous wait.
+        // Only the process owning both the connected window and CDP port is allowed.
+        // _connectedProcessName is a display label ("Edge"), not a process name.
+        BrowserForeground.GrantToBrowser(_sourceWindow, _devToolsPort.Value, expectedProcessName: null);
         _sessionCheckCancellationSource?.Cancel();
         _approvalBadgeCancellationSource?.Cancel();
         _fieldTripReportCancellationSource?.Cancel();
@@ -1282,6 +1286,8 @@ public sealed partial class MainForm : Form
         UpdateConnectionControls();
         var gateAcquired = false;
         SessionNotice? sessionNotice = null;
+        WorkflowResult? presentedBrowser = null;
+        var presentationPort = _devToolsPort.Value;
         try
         {
             await _portalOperationGate.WaitAsync(_workflowCancellationSource.Token);
@@ -1298,9 +1304,8 @@ public sealed partial class MainForm : Form
                 },
                 MakeSourceWindowTransparent);
             var result = await controller.RunAsync(taskKind, _workflowCancellationSource.Token);
-            SetStatus(result.Message);
 
-            if (result.ForegroundWindow != IntPtr.Zero && NativeMethods.IsWindow(result.ForegroundWindow))
+            if (!result.KeepActivatedBrowser && result.ForegroundWindow != IntPtr.Zero && NativeMethods.IsWindow(result.ForegroundWindow))
             {
                 MinimizeSourceWindow();
                 NativeMethods.ShowWindowAsync(result.ForegroundWindow, NativeMethods.SW_MAXIMIZE);
@@ -1308,15 +1313,26 @@ public sealed partial class MainForm : Form
             }
             else if (result.KeepActivatedBrowser)
             {
-                // The controller has presented the actual task window. Raising the
-                // original portal HWND here would cover a task in another window.
+                // Use the actual target captured after native/tab focus confirmation.
+                // The connected portal may belong to a different browser window.
                 RestoreSourceWindowOpacity();
+                autoHidePause?.Dispose();
+                await BrowserForeground.EnsureWindowForegroundAsync(
+                    result.ForegroundWindow, presentationPort, _workflowCancellationSource.Token);
+                presentedBrowser = result;
             }
             else
             {
                 RestoreSourceWindow();
-                SetStatus(result.Message);
             }
+            if (!result.KeepActivatedBrowser) SetStatus(result.Message);
+        }
+        catch (BrowserForegroundException exception)
+        {
+            RestoreSourceWindowOpacity();
+            AppLogger.Error("BrowserFocus", "업무 브라우저 전면 표시를 확인하지 못했습니다.", exception);
+            SetStatus("브라우저 창 표시 확인 필요");
+            sessionNotice = new SessionNotice("브라우저 창 표시 확인 필요", exception.Message);
         }
         catch (OperationCanceledException)
         {
@@ -1362,6 +1378,24 @@ public sealed partial class MainForm : Form
                 _ = RefreshApprovalBadgeAsync();
                 // Student-management navigation already awaits its explicit query.
                 // Let the ten-minute monitor perform the next automatic report read.
+            }
+        }
+
+        // Auto-hide resumption and control updates must not steal the browser back.
+        autoHidePause?.Dispose();
+        if (presentedBrowser is not null && sessionNotice is null && !_isClosing)
+        {
+            if (BrowserForeground.ReadForegroundBrowserWindow(presentationPort) != presentedBrowser.ForegroundWindow)
+            {
+                SetStatus("브라우저 창 표시 확인 필요");
+                sessionNotice = new SessionNotice("브라우저 창 표시 확인 필요",
+                    "브라우저 창이 앞으로 표시되지 않았습니다. 열린 창을 확인한 뒤 다시 눌러 주세요.");
+                AppLogger.Info("BrowserFocus", "업무 정리 후 전면 확인 실패; 성공으로 처리하지 않습니다.");
+            }
+            else
+            {
+                SetStatus(presentedBrowser.Message);
+                AppLogger.Info("BrowserFocus", "업무 정리 후 대상 브라우저 전면 표시를 최종 확인했습니다.");
             }
         }
 

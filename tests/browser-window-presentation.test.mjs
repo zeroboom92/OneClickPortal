@@ -39,7 +39,7 @@ test('actual browser presentation helper activates, maximizes and focuses the ta
       const result = await run('dotnet', ['run', '--project', join(directory, 'Probe.csproj'), '--configuration', 'Release'],
         { timeout: 100_000 });
       assert.match(result.stdout,
-        /PASS: minimized and restored windows, different target owner, awaited command order, cancellation, activation failure, maximization failure, focus failure/);
+        /PASS: minimized and restored windows, different target owner, awaited command order, cancellation, activation failure, maximization failure, focus failure, confirmation failure/);
     } finally {
       assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
       assert.ok(basename(directory).startsWith('oneclick-window-presentation-'));
@@ -70,7 +70,39 @@ test('explicit report and student-management navigation present the target again
     assert.ok(query >= 0 && query < present && present < success,
       `${file}: the completed background query must be followed by target-window presentation before success.`);
     assert.match(body.slice(success), /KeepActivatedBrowser:\s*true/);
+    assert.match(body.slice(success), /ForegroundWindow:\s*session\.PresentedWindowHandle/);
   }
+});
+
+test('every activated workflow returns its confirmed target HWND and final handoff checks it after cleanup', async () => {
+  let returns = 0;
+  for (const file of ['PortalWorkflowController.cs', 'PortalWorkflowController.FieldTripReports.cs',
+    'PortalWorkflowController.StudentManagement.cs', 'PortalWorkflowController.Overviews.cs']) {
+    const source = await readFile(resolve(root, file), 'utf8');
+    for (const result of source.matchAll(/return new WorkflowResult\([^;]*?KeepActivatedBrowser:\s*true\);/g)) {
+      returns++;
+      assert.match(result[0], /ForegroundWindow:\s*session\.PresentedWindowHandle/,
+        `${file}: successful browser handoff omitted its confirmed HWND.`);
+    }
+  }
+  assert.equal(returns, 9, 'The nine explicit browser handoffs must remain covered.');
+  const source = await readFile(resolve(root, 'MainForm.cs'), 'utf8');
+  const workflow = method(source, 'private async Task RunWorkflowAsync(');
+  assert.match(workflow, /BrowserForeground\.EnsureWindowForegroundAsync\(\s*result\.ForegroundWindow,/);
+  const stableCheck = workflow.indexOf('await BrowserForeground.EnsureWindowForegroundAsync(');
+  const recordSuccess = workflow.indexOf('presentedBrowser = result;');
+  assert.ok(stableCheck >= 0 && recordSuccess > stableCheck,
+    'Cancellation or failure during stable confirmation must not record a successful handoff.');
+  const resumeDock = workflow.indexOf('autoHidePause?.Dispose();');
+  assert.ok(resumeDock >= 0 && resumeDock < stableCheck,
+    'Dock resumption must happen before the awaited stable foreground check.');
+  const cleanup = workflow.indexOf('_portalOperationGate.Release()');
+  assert.ok(cleanup > recordSuccess,
+    'The workflow gate must prevent another action from interleaving with foreground confirmation.');
+  const finalCheck = workflow.lastIndexOf('BrowserForeground.ReadForegroundBrowserWindow(');
+  assert.ok(cleanup >= 0 && finalCheck > cleanup,
+    'Final native foreground validation must occur after workflow/gate cleanup.');
+  assert.match(workflow.slice(finalCheck), /presentedBrowser\.ForegroundWindow/);
 });
 
 const probe = String.raw`
@@ -85,14 +117,15 @@ async Task<T> ThrowsAsync<T>(Func<Task> action) where T : Exception
 }
 void Completed(Scenario scenario)
 {
-    Check(scenario.Events.SequenceEqual(new[] { "activate:22", "maximize:22", "focus:22" }),
-        "The target window must be activated, maximized and then focused, exactly once in order.");
+    Check(scenario.Events.SequenceEqual(new[] { "activate:22", "maximize:22", "focus:22", "confirm:22" }),
+        "The target window must be activated, maximized, focused and confirmed, exactly once in order.");
     Check(scenario.Presented && scenario.TargetWindowState == "maximized" && scenario.ForegroundWindow == 22,
         "Successful presentation left the target minimized, restored or in the background.");
     Check(scenario.OriginalWindowState == "minimized",
         "Presentation restored the original window instead of the window owning the target tab.");
     Check(scenario.Tokens.All(token => token == scenario.Cancellation.Token),
         "Presentation changed or dropped the caller cancellation token.");
+    Check(scenario.ConfirmedHandle == new IntPtr(22), "The target HWND was not confirmed before reporting success.");
 }
 
 foreach (var initialState in new[] { "minimized", "normal", "maximized" })
@@ -107,9 +140,9 @@ foreach (var initialState in new[] { "minimized", "normal", "maximized" })
 using (var scenario = new Scenario { PauseCommands = true })
 {
     var pending = new PortalWorkflowController().RunProbeAsync(new DevToolsSession(scenario), scenario);
-    foreach (var step in new[] { "activate", "maximize", "focus" })
+    foreach (var step in new[] { "activate", "maximize", "focus", "confirm" })
     {
-        var expectedCount = step == "activate" ? 1 : step == "maximize" ? 2 : 3;
+        var expectedCount = Array.IndexOf(new[] { "activate", "maximize", "focus", "confirm" }, step) + 1;
         await scenario.Started.Reader.ReadAsync();
         Check(scenario.Events.Count == expectedCount && scenario.Events[^1] == step + ":22"
             && !scenario.Presented && !pending.IsCompleted,
@@ -120,45 +153,55 @@ using (var scenario = new Scenario { PauseCommands = true })
     Completed(scenario);
 }
 
-// Pre-cancellation and cancellation between all three commands must prevent the
+// Pre-cancellation and cancellation between all four commands must prevent the
 // next side effect and must never turn an incomplete handoff into a success.
-foreach (var cancelAfter in new[] { "before", "activate", "maximize", "focus" })
+foreach (var cancelAfter in new[] { "before", "activate", "maximize", "focus", "confirm" })
 {
     using var scenario = new Scenario { CancelAfter = cancelAfter };
     if (cancelAfter == "before") scenario.Cancellation.Cancel();
     var error = await ThrowsAsync<OperationCanceledException>(() =>
         new PortalWorkflowController().RunProbeAsync(new DevToolsSession(scenario), scenario));
-    var count = cancelAfter == "before" ? 0 : cancelAfter == "activate" ? 1 : cancelAfter == "maximize" ? 2 : 3;
+    var count = cancelAfter == "before" ? 0 : Array.IndexOf(new[] { "activate", "maximize", "focus", "confirm" }, cancelAfter) + 1;
     Check(error.CancellationToken == scenario.Cancellation.Token && scenario.Events.Count == count
         && !scenario.Presented && scenario.OriginalWindowState == "minimized",
         "Cancellation was lost, an extra command ran, or incomplete presentation was reported as success.");
 }
 
-foreach (var step in new[] { "activate", "maximize", "focus" })
+foreach (var step in new[] { "activate", "maximize", "focus", "confirm" })
 {
     var failure = new InvalidOperationException("Simulated " + step + " failure.");
     using var scenario = new Scenario { FailAt = step, Failure = failure };
-    var actual = await ThrowsAsync<InvalidOperationException>(() =>
+    var actual = await ThrowsAsync<BrowserForegroundException>(() =>
         new PortalWorkflowController().RunProbeAsync(new DevToolsSession(scenario), scenario));
-    var count = step == "activate" ? 1 : step == "maximize" ? 2 : 3;
-    Check(ReferenceEquals(actual, failure) && scenario.Events.Count == count && !scenario.Presented,
-        "Failed " + step + " was swallowed, continued to another command or marked the browser presented.");
+    var count = Array.IndexOf(new[] { "activate", "maximize", "focus", "confirm" }, step) + 1;
+    Check(ReferenceEquals(actual.InnerException, failure) && scenario.Events.Count == count && !scenario.Presented,
+        "Failed " + step + " lost its cause, continued to another command or marked the browser presented.");
     Check(scenario.OriginalWindowState == "minimized", "A failed command changed the original window.");
     if (step == "maximize")
         Check(scenario.TargetWindowState == "minimized" && scenario.ForegroundWindow == 0,
             "A failed maximization was followed by focus or treated as a visible window.");
 }
 
-Console.WriteLine("PASS: minimized and restored windows, different target owner, awaited command order, cancellation, activation failure, maximization failure, focus failure");
+using (var scenario = new Scenario { FailAt = "confirm", Failure = new BrowserForegroundException("Already classified foreground refusal.") })
+{
+    var actual = await ThrowsAsync<BrowserForegroundException>(() =>
+        new PortalWorkflowController().RunProbeAsync(new DevToolsSession(scenario), scenario));
+    Check(ReferenceEquals(actual, scenario.Failure) && !scenario.Presented && scenario.ConfirmedHandle == IntPtr.Zero,
+        "A classified foreground refusal was wrapped again or marked as presented.");
+}
+
+Console.WriteLine("PASS: minimized and restored windows, different target owner, awaited command order, cancellation, activation failure, maximization failure, focus failure, confirmation failure");
 
 namespace BrowserThumbnailPrototype
 {
+    internal sealed class BrowserForegroundException(string message, Exception? inner = null) : InvalidOperationException(message, inner);
     internal sealed class Scenario : IDisposable
     {
         public string OriginalWindowState { get; set; } = "minimized";
         public string TargetWindowState { get; set; } = "minimized";
         public int ForegroundWindow { get; set; }
         public bool Presented { get; set; }
+        public IntPtr ConfirmedHandle { get; set; }
         public bool PauseCommands { get; init; }
         public string? CancelAfter { get; init; }
         public string? FailAt { get; init; }
@@ -173,9 +216,15 @@ namespace BrowserThumbnailPrototype
 
     internal sealed class DevToolsSession(Scenario state)
     {
+        public IntPtr PresentedWindowHandle { get; private set; }
         public Task ActivateTargetAsync(CancellationToken cancellationToken) => ExecuteAsync("activate", cancellationToken);
         public Task MaximizeTargetWindowAsync(CancellationToken cancellationToken) => ExecuteAsync("maximize", cancellationToken);
         public Task BringToFrontAsync(CancellationToken cancellationToken) => ExecuteAsync("focus", cancellationToken);
+        public async Task ConfirmForegroundWindowAsync(CancellationToken cancellationToken)
+        {
+            await ExecuteAsync("confirm", cancellationToken);
+            PresentedWindowHandle = state.ConfirmedHandle = new IntPtr(22);
+        }
         private async Task ExecuteAsync(string step, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();

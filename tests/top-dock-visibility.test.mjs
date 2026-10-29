@@ -96,7 +96,7 @@ internal static class Program
             StartPosition = FormStartPosition.Manual, AutoScaleMode = AutoScaleMode.None,
             Size = new Size(600, 110), ShowInTaskbar = false,
         };
-        using var cover = new Form
+        using var cover = new NonActivatingCover
         {
             Text = "OneClick isolated covering window", FormBorderStyle = FormBorderStyle.None,
             StartPosition = FormStartPosition.Manual, AutoScaleMode = AutoScaleMode.None,
@@ -126,12 +126,26 @@ internal static class Program
             TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
         Check(label.Width <= button.ClientSize.Width - 8 && label.Height <= button.ClientSize.Height - 4,
             "The collapsed label no longer fits inside the compact button.");
-        using var positionMonitor = new HandlePositionMonitor(handle.Handle);
+        var observedPortalWindow = portal.Handle;
+        var observedHandleWindow = handle.Handle;
+        using var positionMonitor = new HandlePositionMonitor(observedHandleWindow);
+        using var coverSetupMonitor = new HandlePositionMonitor(cover.Handle);
 
         void Cover()
         {
             cover.Bounds = handle.Bounds;
-            if (!cover.Visible) cover.Show();
+            if (!cover.Visible)
+            {
+                // Setup must not issue its own delayed foreground request just
+                // before measuring the production handle's nonactivation.
+                coverSetupMonitor.BeginTick();
+                try { cover.Show(); }
+                finally { coverSetupMonitor.EndTick(); }
+                Check(coverSetupMonitor.Flags.Count > 0
+                    && coverSetupMonitor.Flags.All(flags => (flags & 0x0010) != 0),
+                    "Cover setup requested activation: "
+                        + string.Join(",", coverSetupMonitor.Flags.Select(flags => $"0x{flags:X}")));
+            }
             Check(SetWindowPos(cover.Handle, Topmost, 0, 0, 0, 0, PositionFlags), "Could not raise the isolated covering window.");
             Check(RootAtCenter(handle) == cover.Handle, "The isolated covering window did not actually cover the handle.");
         }
@@ -149,7 +163,13 @@ internal static class Program
             Check(positionMonitor.Flags.All(flags => (flags & 0x0010) != 0),
                 "Handle positioning omitted SWP_NOACTIVATE: "
                     + string.Join(", ", positionMonitor.Flags.Select(flags => $"0x{flags:X}")));
-            Check(GetForegroundWindow() == foreground, "Visibility repair took foreground focus.");
+            var after = GetForegroundWindow();
+            string OwnedWindow(nint window) => window == nint.Zero ? "none"
+                : window == observedPortalWindow ? "portal" : window == observedHandleWindow ? "handle"
+                : cover.IsHandleCreated && !cover.IsDisposed && window == cover.Handle ? "cover" : "external";
+            Check(after == foreground, "Visibility repair took foreground focus. before="
+                + OwnedWindow(foreground) + ",after=" + OwnedWindow(after)
+                + ",flags=" + string.Join(",", positionMonitor.Flags.Select(flags => $"0x{flags:X}")));
         }
 
         Cover();
@@ -277,6 +297,10 @@ internal static class Program
         value.Left + value.Width / 2, value.Top + value.Height / 2)), 2);
     private static nint GetWindowLong(nint handle, int index) => IntPtr.Size == 8
         ? GetWindowLongPtr64(handle, index) : new nint(GetWindowLong32(handle, index));
+    private sealed class NonActivatingCover : Form
+    {
+        protected override bool ShowWithoutActivation => true;
+    }
     private sealed class HandlePositionMonitor : NativeWindow, IDisposable
     {
         private bool _watching;

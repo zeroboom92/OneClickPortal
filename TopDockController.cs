@@ -199,7 +199,12 @@ internal sealed class TopDockController : IDisposable, IMessageFilter
             var handleLeft = Math.Clamp(_anchor.X + (_portal.Width - _handle.Width) / 2,
                 bounds.Left, Math.Max(bounds.Left, bounds.Right - _handle.Width));
             _handle.Location = new Point(handleLeft, bounds.Top + shown);
-            _portal.TopMost = true;
+            // Reapplying Form.TopMost activates the portal even when already true.
+            // Keep the managed preference from Enable, and repair native stacking
+            // during animation/geometry changes without reclaiming input focus.
+            if (_portal.IsHandleCreated)
+                SetWindowPos(_portal.Handle, new IntPtr(-1), 0, 0, 0, 0,
+                    0x0001 | 0x0002 | 0x0010 | 0x0200); // NOSIZE | NOMOVE | NOACTIVATE | NOOWNERZORDER
         }
         finally { _applying = false; }
         UpdateAutoHide();

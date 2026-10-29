@@ -165,6 +165,9 @@ internal sealed class DevToolsSession : IAsyncDisposable
     private int _disposed;
     private string? _sessionId;
     private string? _targetId;
+    private int _port;
+
+    public IntPtr PresentedWindowHandle { get; private set; }
 
     private DevToolsSession()
     {
@@ -224,6 +227,7 @@ internal sealed class DevToolsSession : IAsyncDisposable
             session._sessionId = result.GetProperty("sessionId").GetString()
                 ?? throw new InvalidOperationException("브라우저 탭에 연결하지 못했습니다.");
             session._targetId = targetId;
+            session._port = port;
             AppLogger.Info("DevTools", "브라우저 탭 연결 완료");
             return session;
         }
@@ -309,6 +313,56 @@ internal sealed class DevToolsSession : IAsyncDisposable
     public Task BringToFrontAsync(CancellationToken cancellationToken = default)
     {
         return ExecuteSessionCommandWithoutResultAsync("Page.bringToFront", new { }, cancellationToken);
+    }
+
+    public async Task ConfirmForegroundWindowAsync(CancellationToken cancellationToken = default)
+    {
+        PresentedWindowHandle = IntPtr.Zero;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(2));
+        try
+        {
+            for (var attempt = 0; attempt < 6; attempt++)
+            {
+                deadline.Token.ThrowIfCancellationRequested();
+                var focused = await EvaluateBooleanAsync("document.hasFocus()", cancellationToken: deadline.Token);
+                var window = BrowserForeground.ReadForegroundBrowserWindow(_port);
+                AppLogger.Info("BrowserFocus", $"pageFocused={focused};nativeWindowMatched={window != IntPtr.Zero};attempt={attempt + 1}");
+                if (focused && window != IntPtr.Zero)
+                {
+                    await Task.Delay(50, deadline.Token);
+                    if (BrowserForeground.ReadForegroundBrowserWindow(_port) == window
+                        && await EvaluateBooleanAsync("document.hasFocus()", cancellationToken: deadline.Token)
+                        && BrowserForeground.ReadForegroundBrowserWindow(_port) == window)
+                    {
+                        PresentedWindowHandle = window;
+                        AppLogger.Info("BrowserFocus", "대상 탭 초점과 실제 브라우저 전면 창을 확인했습니다.");
+                        return;
+                    }
+                }
+
+                if (attempt is 1 or 3) await BringToFrontAsync(deadline.Token);
+                await Task.Delay(50, deadline.Token);
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new BrowserForegroundException("브라우저 창의 전면 표시를 확인하지 못했습니다. 열린 창을 확인한 뒤 다시 눌러 주세요.");
+        }
+        catch (OperationCanceledException)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw;
+        }
+        catch (BrowserForegroundException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new BrowserForegroundException("브라우저 창의 전면 표시를 확인하지 못했습니다. 열린 창을 확인한 뒤 다시 눌러 주세요.", exception);
+        }
+        throw new BrowserForegroundException("브라우저 창의 전면 표시를 확인하지 못했습니다. 열린 창을 확인한 뒤 다시 눌러 주세요.");
     }
 
     public async Task ResumeBackgroundPageAsync(CancellationToken cancellationToken = default)

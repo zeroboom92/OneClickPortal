@@ -540,10 +540,12 @@ namespace BrowserThumbnailPrototype
     }
     internal sealed class DevToolsSession : IAsyncDisposable
     {
+        public IntPtr PresentedWindowHandle => throw new Exception("Unexpected real foreground property adapter.");
         public static Task<string> CreateTargetAsync(int port, Uri uri, CancellationToken token, bool newWindow = false) => throw new Exception("Unexpected real create adapter.");
         public static Task<DevToolsSession> ConnectAsync(int port, string id, CancellationToken token) => throw new Exception("Unexpected real connect adapter.");
         public Task ActivateTargetAsync(CancellationToken token) => throw new Exception("Unexpected real activate adapter.");
         public Task MaximizeTargetWindowAsync(CancellationToken token) => throw new Exception("Unexpected real maximize adapter.");
+        public Task ConfirmForegroundWindowAsync(CancellationToken token) => throw new Exception("Unexpected real confirmation adapter.");
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
     internal static class AppLogger { public static void Info(string area, string message) { } }

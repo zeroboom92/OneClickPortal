@@ -49,6 +49,7 @@ async Task<T> ThrowsAsync<T>(Func<Task<WorkflowResult>> run, string message) whe
 void Shown(Scenario scenario, WorkflowResult result, string label)
 {
     Check(result.KeepActivatedBrowser && scenario.Shown, label + ": browser was not displayed.");
+    Check(result.ForegroundWindow == new IntPtr(22), label + ": confirmed target HWND was not returned.");
     Check(scenario.Events.Count(e => e == "show") == 1, label + ": browser restoration was repeated.");
     Check(scenario.Disposed, label + ": transport was not disposed.");
 }
@@ -196,6 +197,7 @@ namespace BrowserThumbnailPrototype
 
     internal sealed class DevToolsSession : IAsyncDisposable
     {
+        public IntPtr PresentedWindowHandle { get; internal set; }
         public static Scenario Current { get; set; } = null!;
         public Scenario State { get; }
         private ExpressionKind? _pendingClick;
@@ -294,6 +296,7 @@ namespace BrowserThumbnailPrototype
         {
             session.State.Events.Add("show");
             session.State.Shown = true;
+            session.PresentedWindowHandle = new IntPtr(22);
             return Task.CompletedTask;
         }
         private static Task SelectEdufineJobAsync(DevToolsSession session, string name, CancellationToken cancellationToken)

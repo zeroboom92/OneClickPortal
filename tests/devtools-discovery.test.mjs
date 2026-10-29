@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
+import { browserForegroundStub } from './helpers/browser-foreground-fixture.mjs';
 
 const run = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -25,6 +26,7 @@ test('actual DevTools discovery handles local HTTP failures without touching run
         </ItemGroup>
       </Project>`);
       await writeFile(join(directory, 'Program.cs'), probe);
+      await writeFile(join(directory, 'BrowserForeground.cs'), browserForegroundStub);
       await run('dotnet', ['build', project, '--configuration', 'Release', '--nologo'],
         { timeout: 90_000, maxBuffer: 1024 * 1024 }).catch(error => {
           assert.fail([error.message, error.stdout, error.stderr].filter(Boolean).join('\n'));
