@@ -117,6 +117,53 @@ internal static class DevToolsDiscovery
         return ParseBrowserWebSocketUri(await ReadBrowserVersionAsync(port, cancellationToken), port);
     }
 
+    internal static async Task<uint?> ReadBrowserProcessIdAsync(int port, PortalBrowser browser,
+        CancellationToken cancellationToken = default)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(3));
+        using var socket = new ClientWebSocket();
+        socket.Options.Proxy = null;
+        try
+        {
+            var metadata = await ReadBrowserVersionAsync(port, timeout.Token);
+            if (!metadata.TryGetProperty("Browser", out var product) || product.ValueKind != JsonValueKind.String
+                || !BrowserSupport.MatchesProduct(browser, product.GetString())) return null;
+            var uri = new UriBuilder(ParseBrowserWebSocketUri(metadata, port)) { Host = "127.0.0.1" }.Uri;
+            await socket.ConnectAsync(uri, timeout.Token);
+            var command = Encoding.UTF8.GetBytes("{\"id\":1,\"method\":\"SystemInfo.getProcessInfo\"}");
+            await socket.SendAsync(new ArraySegment<byte>(command), WebSocketMessageType.Text, true, timeout.Token);
+            var buffer = new byte[4096];
+            for (var message = 0; message < 8; message++)
+            {
+                using var body = new MemoryStream();
+                WebSocketReceiveResult frame;
+                do
+                {
+                    frame = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), timeout.Token);
+                    if (frame.MessageType != WebSocketMessageType.Text || body.Length + frame.Count > 131072) return null;
+                    body.Write(buffer, 0, frame.Count);
+                } while (!frame.EndOfMessage);
+                using var json = JsonDocument.Parse(body.ToArray());
+                var root = json.RootElement;
+                if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("id", out var id)
+                    || id.ValueKind != JsonValueKind.Number || !id.TryGetInt32(out var number) || number != 1) continue;
+                if (root.TryGetProperty("error", out _) || !root.TryGetProperty("result", out var result)
+                    || result.ValueKind != JsonValueKind.Object || !result.TryGetProperty("processInfo", out var processes)
+                    || processes.ValueKind != JsonValueKind.Array) return null;
+                var owners = processes.EnumerateArray().Where(process => process.ValueKind == JsonValueKind.Object
+                    && process.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String
+                    && type.GetString() == "browser").ToArray();
+                return owners.Length == 1 && owners[0].TryGetProperty("id", out var processId)
+                    && processId.ValueKind == JsonValueKind.Number && processId.TryGetUInt32(out var value)
+                    && value > 0 ? value : null;
+            }
+            return null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch { return null; }
+    }
+
     private static async Task<JsonElement> ReadBrowserVersionAsync(int port, CancellationToken cancellationToken)
     {
         await using var stream = await HttpClient.GetStreamAsync($"http://127.0.0.1:{port}/json/version", cancellationToken);
@@ -124,7 +171,7 @@ internal static class DevToolsDiscovery
         return document.RootElement.Clone();
     }
 
-    private static Uri ParseBrowserWebSocketUri(JsonElement version, int port)
+    internal static Uri ParseBrowserWebSocketUri(JsonElement version, int port)
     {
         if (version.ValueKind != JsonValueKind.Object
             || !version.TryGetProperty("webSocketDebuggerUrl", out var value)
@@ -150,9 +197,10 @@ internal static class DevToolsDiscovery
     }
 }
 
-internal enum DevToolsProbeStatus { Ready, NoPortalTarget, Unreachable, InvalidResponse, BrowserMismatch, Ambiguous, WindowMismatch }
+internal enum DevToolsProbeStatus { Ready, NoPortalTarget, Unreachable, InvalidResponse, BrowserMismatch, Ambiguous, WindowMismatch, WindowOwnerUnavailable }
 internal sealed record DevToolsPortProbe(int Port, DevToolsProbeStatus Status,
-    IReadOnlyList<string> OfficeCodes, string? FailureKind = null);
+    IReadOnlyList<string> OfficeCodes, string? FailureKind = null,
+    uint? SelectedProcessId = null, uint? EndpointProcessId = null);
 internal sealed record DevToolsDiscoveryResult(int? Port, IReadOnlyList<DevToolsPortProbe> Probes);
 
 internal sealed class DevToolsSession : IAsyncDisposable

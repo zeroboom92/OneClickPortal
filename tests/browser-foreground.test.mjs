@@ -62,7 +62,7 @@ test('isolated native WinForms handles retain exact endpoint ownership and fail 
     try {
       await writeFile(join(directory, 'Probe.csproj'), `<Project Sdk="Microsoft.NET.Sdk">
         <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
-        <ItemGroup>${['BrowserForeground.cs', 'BrowserEndpointOwner.cs'].map(name =>
+        <ItemGroup>${['BrowserForeground.cs', 'BrowserEndpointOwner.cs', 'DevToolsAutomation.cs', 'BrowserSupport.cs', 'EducationOffice.cs'].map(name =>
           `<Compile Include="${xml(resolve(root, name))}" Link="${name}" />`).join('\n')}</ItemGroup>
       </Project>`);
       await writeFile(join(directory, 'Program.cs'), nativeProbe);
@@ -289,6 +289,7 @@ namespace BrowserThumbnailPrototype
     internal static class BrowserEndpointOwner
     {
         public static uint? FindListeningProcessId(int port) => throw new Exception("Production ownership must not be used by the pure fixture.");
+        public static uint? ReadOwnerForImmediateUse(int port) => throw new Exception("Production protocol ownership must not be used by the pure fixture.");
     }
     internal static class AppLogger { public static void Info(string area, string message) => throw new Exception("Production logger must not be used by the pure fixture."); }
 }
@@ -394,9 +395,10 @@ sealed class RefusingNativeWindows : BrowserForeground.IWindowApi
 }
 namespace BrowserThumbnailPrototype
 {
-    internal enum DevToolsProbeStatus { Ready, Ambiguous, WindowMismatch }
-    internal sealed record DevToolsPortProbe(int Port, DevToolsProbeStatus Status);
-    internal sealed record DevToolsDiscoveryResult(int? Port, IReadOnlyList<DevToolsPortProbe> Probes);
-    internal static class AppLogger { public static void Info(string area, string message) { } }
+    internal static class AppLogger
+    {
+        public static void Info(string area, string message) { }
+        public static void Error(string area, string message, Exception error) { }
+    }
 }
 `;

@@ -53,6 +53,8 @@ test('actual Edge and Chrome channel failure diagnostics with isolated policy sn
         ['chrome-policy', 'Chrome policy snapshots and registry paths stay separate from Edge'],
         ['browser-mismatch', 'a different browser channel requires the selected browser without claiming login failed'],
         ['window-mismatch', 'a different window in the same browser requires the dedicated login window'],
+        ['owner-unavailable', 'unverified ownership never claims the user selected a different window'],
+        ['selected-login-window', 'a verified retry selection is explained without demanding another login'],
         ['ambiguous', 'multiple browser channels never receive a misleading successful connection diagnosis'],
       ];
       for (const [scenario, name] of cases) {
@@ -238,6 +240,34 @@ else if (scenario == "window-mismatch")
         Array.Empty<EdgeChannelPolicySnapshot>(), PortalBrowser.Chrome);
     Check(AppLogger.Lines.Any(line => line.Contains("Status=WindowMismatch")), "Window mismatch status was not retained in logs.");
 }
+else if (scenario == "owner-unavailable")
+{
+    foreach (var browser in new[] { PortalBrowser.Edge, PortalBrowser.Chrome })
+    {
+        var result = new DevToolsDiscoveryResult(null, [
+            new(9222, DevToolsProbeStatus.WindowOwnerUnavailable, ["jbe"], SelectedProcessId: 1234),
+            new(9223, DevToolsProbeStatus.WindowMismatch, ["jbe"], SelectedProcessId: 1234, EndpointProcessId: 5678),
+        ]);
+        message = EdgeChannelDiagnostics.DescribeFailure(office, result, [], browser);
+        Check(message.Contains("같은 창인지 확인하지 못했습니다"), "Unverified owner guidance is missing.");
+        Check(!message.Contains("창이 다릅니다") && !message.Contains("일반 ")
+            && !message.Contains("채널이 응답하지 않습니다"), "Unverified ownership was falsely diagnosed.");
+        Check(message.Contains("목록을 새로고침") && message.Contains(BrowserSupport.GetDisplayName(browser)), "Retry guidance omitted refresh or browser.");
+    }
+    Check(AppLogger.Lines.Any(line => line.Contains("Status=WindowOwnerUnavailable")
+        && line.Contains("SelectedProcessId=1234") && line.Contains("EndpointProcessId=unknown")), "Missing ownership evidence was omitted.");
+    Check(AppLogger.Lines.Any(line => line.Contains("Status=WindowMismatch")
+        && line.Contains("SelectedProcessId=1234") && line.Contains("EndpointProcessId=5678")), "Different-owner evidence was omitted.");
+    message = Describe(Result(DevToolsProbeStatus.WindowOwnerUnavailable));
+}
+else if (scenario == "selected-login-window")
+{
+    message = EdgeChannelDiagnostics.DescribeFailure(office, Result(DevToolsProbeStatus.WindowMismatch), [],
+        PortalBrowser.Edge, loginWindowSelected: true);
+    Check(message.Contains("목록에 다시 선택했습니다")
+        && message.Contains("'연결'을 다시 눌러"), "Verified window selection was not explained.");
+    Check(!message.Contains("직접 로그인해 주세요"), "The user was incorrectly asked to log in again after recovery.");
+}
 else throw new Exception("Unknown diagnostic scenario.");
 
 Check(message.EndsWith(AppLogger.CurrentLogPath), "The support log path is missing.");
@@ -246,8 +276,9 @@ Console.WriteLine("PASS: " + scenario);
 
 namespace BrowserThumbnailPrototype
 {
-    internal enum DevToolsProbeStatus { Ready, NoPortalTarget, Unreachable, InvalidResponse, BrowserMismatch, Ambiguous, WindowMismatch }
-    internal sealed record DevToolsPortProbe(int Port, DevToolsProbeStatus Status, IReadOnlyList<string> OfficeCodes, string? FailureKind = null);
+    internal enum DevToolsProbeStatus { Ready, NoPortalTarget, Unreachable, InvalidResponse, BrowserMismatch, Ambiguous, WindowMismatch, WindowOwnerUnavailable }
+    internal sealed record DevToolsPortProbe(int Port, DevToolsProbeStatus Status, IReadOnlyList<string> OfficeCodes,
+        string? FailureKind = null, uint? SelectedProcessId = null, uint? EndpointProcessId = null);
     internal sealed record DevToolsDiscoveryResult(int? Port, IReadOnlyList<DevToolsPortProbe> Probes);
     internal static class AppLogger
     {

@@ -61,7 +61,7 @@ public sealed partial class MainForm
         var browser = AppPreferences.GetLoginBrowser();
         var port = (await DevToolsDiscovery.InspectPortalPortsAsync(office, browser, cancellation.Token)).Port;
         if (port is null) return;
-        var owner = BrowserEndpointOwner.FindListeningProcessId(port.Value);
+        var owner = await BrowserEndpointOwner.ResolveProcessIdAsync(port.Value, browser, cancellation.Token);
         if (owner is null) return;
         var targets = await DevToolsDiscovery.GetTargetsAsync(port.Value, cancellation.Token);
         if (targets.Count(target => target.Type == "page"

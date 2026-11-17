@@ -34,7 +34,7 @@ internal static class BrowserForeground
         Action<string> Log);
 
     private static readonly Context Production = new(
-        new Win32WindowApi(), BrowserEndpointOwner.FindListeningProcessId,
+        new Win32WindowApi(), BrowserEndpointOwner.ReadOwnerForImmediateUse,
         () => Environment.TickCount64, Task.Delay,
         message => AppLogger.Info("BrowserFocus", message));
 

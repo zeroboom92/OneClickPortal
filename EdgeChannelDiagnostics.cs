@@ -29,9 +29,9 @@ internal static class EdgeChannelDiagnostics
     };
 
     public static string DescribeFailure(EducationOffice office, DevToolsDiscoveryResult result,
-        PortalBrowser browser = PortalBrowser.Edge)
+        PortalBrowser browser = PortalBrowser.Edge, bool loginWindowSelected = false)
     {
-        return DescribeFailure(office, result, ReadPolicies(browser), browser);
+        return DescribeFailure(office, result, ReadPolicies(browser), browser, loginWindowSelected);
     }
 
     public static string DescribePolicyHints(PortalBrowser browser = PortalBrowser.Edge)
@@ -44,7 +44,8 @@ internal static class EdgeChannelDiagnostics
     // A supplied snapshot keeps policy interpretation independently testable without
     // changing the user's browser or machine policy.
     internal static string DescribeFailure(EducationOffice office, DevToolsDiscoveryResult result,
-        IReadOnlyList<EdgeChannelPolicySnapshot> policies, PortalBrowser browser = PortalBrowser.Edge)
+        IReadOnlyList<EdgeChannelPolicySnapshot> policies, PortalBrowser browser = PortalBrowser.Edge,
+        bool loginWindowSelected = false)
     {
         var browserName = BrowserSupport.GetDisplayName(browser);
         var selectedOffice = EducationOfficeCatalog.GetByCode(office.Code);
@@ -62,11 +63,25 @@ internal static class EdgeChannelDiagnostics
             message.AppendLine($"연결할 수 있는 {browserName} 제어 채널이 여러 개여서 선택한 창을 구분하지 못했습니다.");
             message.AppendLine($"원클릭에서 연 {browserName} 업무포털 창을 확인하고, 사용하지 않는 전용 {browserName} 창을 닫은 뒤 다시 연결해 주세요.");
         }
+        else if (result.Probes.Any(probe => probe.Status == DevToolsProbeStatus.WindowOwnerUnavailable))
+        {
+            message.AppendLine($"업무포털 제어 채널은 응답하지만 선택한 {browserName} 창과 같은 창인지 확인하지 못했습니다.");
+            message.AppendLine("브라우저 창 목록을 새로고침하고 원클릭의 '로그인'으로 연 창을 선택한 뒤 다시 연결해 주세요.");
+            message.AppendLine("같은 안내가 반복되면 아래 로그 파일을 담당자에게 전달해 주세요.");
+        }
         else if (result.Probes.Any(probe => probe.Status == DevToolsProbeStatus.WindowMismatch))
         {
             message.AppendLine($"선택한 {browserName} 창과 업무포털 제어 채널의 창이 다릅니다.");
-            message.AppendLine($"브라우저 목록에서 원클릭의 '로그인'으로 연 전용 {browserName} 창을 선택한 뒤 다시 연결해 주세요.");
-            message.AppendLine($"일반 {browserName} 창에 로그인하셨다면, 원클릭의 '로그인'으로 연 창에서 직접 로그인해 주세요.");
+            if (loginWindowSelected)
+            {
+                message.AppendLine("확인된 업무포털 로그인 창을 브라우저 목록에 다시 선택했습니다.");
+                message.AppendLine("목록에 선택된 창을 확인한 뒤 '연결'을 다시 눌러 주세요.");
+            }
+            else
+            {
+                message.AppendLine($"브라우저 목록에서 원클릭의 '로그인'으로 연 전용 {browserName} 창을 선택한 뒤 다시 연결해 주세요.");
+                message.AppendLine($"일반 {browserName} 창에 로그인하셨다면, 원클릭의 '로그인'으로 연 창에서 직접 로그인해 주세요.");
+            }
         }
         else if (otherOffices.Length > 0)
         {
@@ -191,7 +206,8 @@ internal static class EdgeChannelDiagnostics
         {
             var status = Enum.IsDefined(probe.Status) ? probe.Status.ToString() : "Unknown";
             var codes = string.Join(",", KnownOffices(probe.OfficeCodes).Select(candidate => candidate.Code));
-            AppLogger.Info("BrowserChannel", $"Port={probe.Port}, Status={status}, OfficeCodes={codes}, Failure={SafeFailureKind(probe.FailureKind)}");
+            AppLogger.Info("BrowserChannel", $"Port={probe.Port}, Status={status}, OfficeCodes={codes}, Failure={SafeFailureKind(probe.FailureKind)}, "
+                + $"SelectedProcessId={probe.SelectedProcessId?.ToString() ?? "unknown"}, EndpointProcessId={probe.EndpointProcessId?.ToString() ?? "unknown"}");
         }
         LogPolicyObservations(policies, browser);
     }

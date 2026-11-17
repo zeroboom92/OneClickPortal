@@ -914,7 +914,8 @@ public sealed partial class MainForm : Form
             return;
         }
 
-        if (!NativeMethods.IsWindow(selected.Handle))
+        NativeMethods.GetWindowThreadProcessId(selected.Handle, out var selectedProcessId);
+        if (selectedProcessId == 0 || !NativeMethods.IsWindow(selected.Handle))
         {
             RefreshBrowserWindows();
             MessageBox.Show(this, "선택한 브라우저 창이 더 이상 존재하지 않습니다.", "연결 실패", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -945,17 +946,26 @@ public sealed partial class MainForm : Form
                 educationOffice,
                 BrowserSupport.FromProcessName(selected.ProcessName),
                 _workflowCancellationSource.Token);
-            NativeMethods.GetWindowThreadProcessId(selected.Handle, out var selectedProcessId);
-            discovery = BrowserEndpointOwner.ForProcess(discovery, selectedProcessId);
+            discovery = await BrowserEndpointOwner.ForProcessAsync(discovery, selectedProcessId,
+                BrowserSupport.FromProcessName(selected.ProcessName), _workflowCancellationSource.Token);
+            NativeMethods.GetWindowThreadProcessId(selected.Handle, out var currentProcessId);
+            if (currentProcessId != selectedProcessId || !NativeMethods.IsWindow(selected.Handle))
+            {
+                ResetFailedBrowserConnection();
+                throw new InvalidOperationException("선택한 브라우저 창이 변경되었습니다. 창 목록을 새로고침한 뒤 다시 선택해 주세요.");
+            }
             _devToolsPort = discovery.Port;
             if (_devToolsPort is null)
             {
                 keepPendingTaskAfterFailure = _pendingTaskKind is not null;
                 ResetFailedBrowserConnection();
+                var loginWindowSelected = await TrySelectVerifiedLoginWindowAsync(
+                    BrowserSupport.FromProcessName(selected.ProcessName), discovery, _workflowCancellationSource.Token);
                 SetConnectionStatus("연결 실패 · 원인 안내 확인");
                 MessageBox.Show(
                     this,
-                    EdgeChannelDiagnostics.DescribeFailure(educationOffice, discovery, BrowserSupport.FromProcessName(selected.ProcessName)),
+                    EdgeChannelDiagnostics.DescribeFailure(educationOffice, discovery,
+                        BrowserSupport.FromProcessName(selected.ProcessName), loginWindowSelected),
                     "자동화 연결 필요",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -1083,7 +1093,7 @@ public sealed partial class MainForm : Form
                 await Task.Delay(500);
                 if (_isClosing || IsDisposed || Disposing) return;
                 RefreshBrowserWindows();
-                SelectLaunchedPortalEdge(browser, reusedPort);
+                await SelectLaunchedPortalEdgeWithVerifiedOwnerAsync(browser, reusedPort.Value);
                 return;
             }
 
@@ -1108,7 +1118,7 @@ public sealed partial class MainForm : Form
             var probe = await WaitForLaunchedEdgeChannelAsync(port, educationOffice, browser);
             if (_isClosing || IsDisposed || Disposing) return;
             RefreshBrowserWindows();
-            SelectLaunchedPortalEdge(browser, port);
+            await SelectLaunchedPortalEdgeWithVerifiedOwnerAsync(browser, port);
             if (probe.Status is DevToolsProbeStatus.Ready or DevToolsProbeStatus.NoPortalTarget)
             {
                 AppLogger.Info("BrowserLaunch", $"로그인 창 제어 채널 준비 완료: browser={browserName}, port={port}, office={educationOffice.Code}");
@@ -1156,13 +1166,53 @@ public sealed partial class MainForm : Form
         return last;
     }
 
-    private void SelectLaunchedPortalEdge(PortalBrowser browser = PortalBrowser.Edge, int? port = null)
+    private async Task<bool> TrySelectVerifiedLoginWindowAsync(PortalBrowser browser, DevToolsDiscoveryResult discovery,
+        CancellationToken cancellationToken = default)
+    {
+        if (_sourceWindow != IntPtr.Zero || discovery.Port is not null || _isClosing || IsDisposed || Disposing) return false;
+        var candidates = discovery.Probes.Where(probe => probe.Status is
+            DevToolsProbeStatus.WindowMismatch or DevToolsProbeStatus.WindowOwnerUnavailable
+                or DevToolsProbeStatus.Ambiguous or DevToolsProbeStatus.Ready)
+            .ToArray();
+        if (candidates.Length != 1) return false;
+        var candidate = candidates[0];
+        if (candidate.Status != DevToolsProbeStatus.WindowMismatch
+            || candidate.EndpointProcessId is not uint expectedOwner || expectedOwner == 0) return false;
+        var owner = await BrowserEndpointOwner.ResolveProcessIdAsync(candidate.Port, browser, cancellationToken);
+        if (owner != expectedOwner || _isClosing || IsDisposed || Disposing) return false;
+
+        RefreshBrowserWindows();
+        SelectLaunchedPortalEdge(browser, candidate.Port, expectedOwner);
+        if (_browserWindows.SelectedItem is BrowserWindowItem selected
+            && IsWindowOwnedBy(selected.Handle, expectedOwner))
+        {
+            // Select only for review and a manual retry; never connect to another window here.
+            AppLogger.Info("BrowserChannel", $"로그인 창 재선택: Browser={BrowserSupport.GetDisplayName(browser)}, "
+                + $"Port={candidate.Port}, EndpointProcessId={candidate.EndpointProcessId}");
+            return true;
+        }
+        _browserWindows.SelectedItem = null;
+        return false;
+    }
+
+    private async Task SelectLaunchedPortalEdgeWithVerifiedOwnerAsync(PortalBrowser browser, int port)
+    {
+        if (_sourceWindow != IntPtr.Zero || _isClosing || IsDisposed || Disposing) return;
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+        var owner = await BrowserEndpointOwner.ResolveProcessIdAsync(port, browser, cancellation.Token);
+        if (_sourceWindow != IntPtr.Zero || _isClosing || IsDisposed || Disposing) return;
+        RefreshBrowserWindows();
+        SelectLaunchedPortalEdge(browser, port, owner);
+    }
+
+    private void SelectLaunchedPortalEdge(PortalBrowser browser = PortalBrowser.Edge, int? port = null,
+        uint? verifiedOwner = null)
     {
         if (_sourceWindow != IntPtr.Zero) return;
-        var owner = port is not null ? BrowserEndpointOwner.FindListeningProcessId(port.Value) : null;
+        var owner = verifiedOwner ?? (port is not null ? BrowserEndpointOwner.FindListeningProcessId(port.Value) : null);
         var candidates = _browserWindows.Items.Cast<BrowserWindowItem>()
             .Where(window => string.Equals(window.ProcessName, BrowserSupport.GetProcessName(browser), StringComparison.OrdinalIgnoreCase)
-                && (port is not null ? owner is not null && IsWindowOwnedBy(window.Handle, owner.Value)
+                && (port is not null ? owner is > 0 && IsWindowOwnedBy(window.Handle, owner.Value)
                     : window.Title.Contains("업무포털", StringComparison.Ordinal)))
             .ToArray();
         _browserWindows.SelectedItem = candidates.Length == 1 ? candidates[0] : null;

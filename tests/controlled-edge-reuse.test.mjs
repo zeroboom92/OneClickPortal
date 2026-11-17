@@ -20,7 +20,7 @@ test('successful reuse returns before profile permission writes and a second bro
   const reuse = login.slice(login.indexOf('if (reusedPort is not null)'),
     login.indexOf('PrepareControlledProfile'));
   const refreshAt = reuse.indexOf('RefreshBrowserWindows();');
-  const selectAt = reuse.indexOf('SelectLaunchedPortalEdge(');
+  const selectAt = reuse.indexOf('SelectLaunchedPortalEdgeWithVerifiedOwnerAsync(');
   const returnAt = reuse.indexOf('return;', selectAt);
   assert.ok(refreshAt >= 0 && selectAt > refreshAt && returnAt > selectAt,
     'Reuse must refresh, select the launched portal window and return within its success branch.');
@@ -30,7 +30,7 @@ test('successful reuse returns before profile permission writes and a second bro
     < login.indexOf('PrepareControlledProfile'));
   assert.match(login, /if \(!EdgeIntegrationPolicy\.PrepareControlledProfile\(educationOffice,\s*browser\)\)/);
   assert.match(login, /var reusedPort = await ControlledEdgeLauncher\.TryReusePortAsync\(educationOffice,\s*browser\)/);
-  assert.match(reuse, /SelectLaunchedPortalEdge\(browser,\s*reusedPort\)/);
+  assert.match(reuse, /await SelectLaunchedPortalEdgeWithVerifiedOwnerAsync\(browser,\s*reusedPort\.Value\)/);
   assert.match(login, /BrowserSupport\.CreateStartInfo\(browser,\s*port,\s*educationOffice\)/);
   assert.ok(login.indexOf('PrepareControlledProfile') < login.indexOf('Process.Start(startInfo)'));
 });
@@ -415,6 +415,11 @@ else if (scenario == "owned-window-selection")
         fixture.Selected = previous;
         fixture.Select(browser, 9228);
         Check(fixture.Selected is null, "An unknown endpoint owner retained an unrelated window.");
+        fixture.Items.Add(owned);
+        fixture.Select(browser, 9228, 333);
+        Check(ReferenceEquals(fixture.Selected, owned), "A protocol-verified owner could not select its exact window when the TCP table was empty.");
+        fixture.Select(browser, 9228, 0);
+        Check(fixture.Selected is null, "A zero verified owner selected an unowned window.");
     }
 }
 else throw new Exception("Unknown fixture scenario.");
@@ -510,7 +515,7 @@ internal sealed class MainFormSelectionProbe
     public List<BrowserWindowItem> Items => _browserWindows.Items;
     public BrowserWindowItem? Selected { get => _browserWindows.SelectedItem; set => _browserWindows.SelectedItem = value; }
     public bool Connected { set => _sourceWindow = value ? new IntPtr(1) : IntPtr.Zero; }
-    public void Select(PortalBrowser browser = PortalBrowser.Edge, int? port = null) => SelectLaunchedPortalEdge(browser, port);
+    public void Select(PortalBrowser browser = PortalBrowser.Edge, int? port = null, uint? verifiedOwner = null) => SelectLaunchedPortalEdge(browser, port, verifiedOwner);
     /* PRODUCTION_SELECTION */
 }
 
