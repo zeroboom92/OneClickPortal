@@ -2,6 +2,15 @@
 
 작성일: 2026-09-22
 
+## 1.4.5 정식 공개 완료·공개 파일 검증 (2026-11-20)
+
+- 승인된 브라우저 연결 오류 수정과 기존 안내 화면으로 [v1.4.5](https://github.com/zeroboom92/OneClickPortal/releases/tag/v1.4.5)를 한국 시간 2026-11-20 11:07:26에 정식 공개했습니다. 최신 정식이며 draft/prerelease가 아닙니다. 태그와 배포 서버 소스는 `2a01ab41240d946c9ec288d6ee8ece47a06d8f35`입니다. 배포 설명은 승인한 RELEASE_NOTES와 줄바꿈 정규화 후 일치합니다.
+- [배포 워크플로 44658085060](https://github.com/zeroboom92/OneClickPortal/actions/runs/44658085060)의 모든 단계가 성공했습니다. 실제 서버 로그에서 승인 head, Debug 경고·오류 0개, Windows 전체 449개 통과와 실패·취소·생략 0개를 확인했습니다. 정식 Release publish·기존 1.4.4 기준 full/delta·설치/portable 생성·게시 완료를 확인했습니다.
+- 공개 파일 6개를 실제 내려받아 GitHub API 크기와 SHA256을 모두 대조했습니다. 공개 패키지 감사 53/53이 CRC·full/portable 전체 payload·정식 경로/피드·노트·개인자료/소스 제외·공개 1.4.4 기준 delta를 확인했습니다. 공개 프로그램은 CI가 별도 빌드하므로 로컬 검토 DLL과의 전체 바이트 대조는 별도 검증 범위로 기록했습니다.
+- 실제 공개 DLL 검사 180/180이 통과했습니다. 안내 그림 4개와 업무 스크립트 8개가 승인된 검토본과 각각 바이트·줄바꿈 정규화 기준으로 일치합니다. 공개 DLL SHA256은 `01EC5C38004654C7FC17573F49F3B64B4E8899175575840EC71F3A4696F30BE5`입니다. 공개 full은 `44D84176F5B5D21F2DB90446E94D94B34901472201F405E4592B6C3611B00139`, delta는 `7386D3CC6BCAE9F3C499ACD706E8BF4AE25B2F9BBACB1BB24286E64A350B2F03`입니다.
+- 공개 DLL의 연결 수정 구조 검사 23개가 실제 제품 시작점·확인용 실행기 부재·비동기 소유자 확인·빈 조회의 제한된 보완·PID 전후 확인·수동 재선택·업무 창 표시 경로를 확인했습니다. 대조한 216개 메서드의 호출 순서와 멤버 참조가 일치했고, 정규화 IL은 201/216개가 일치했습니다. 나머지 15개의 bool 조건 분기·지역변수 슬롯·async 정리 차이를 직접 검토했으며 잘못된 호출이나 누락된 연결 수정은 발견하지 못했습니다. 엄격한 전체 IL 비교는 실패 상태로 보존합니다. MainForm 연결/재선택, 실제 브라우저 PID 판독기, 빈 목록 보완 조건은 정규화 IL이 일치합니다. 상세 근거는 `connection-dll/`에 기록했으며 공개 DLL 전체 바이트나 모든 IL의 동일·완전 동등성은 보장하지 않습니다.
+- 증거는 `tmp/release-1.4.5-verification/`의 `publication-approval.json`, `ci-final-status.json`, `ci-final-job.json`, `ci-verification-summary.json`, `ci-job-log.txt`, `public-release.json`, `public-asset-checksums.json`, `package-verification-public.json`, `public/verification.json`, `public-local-comparison.json`과 `public/renders/`입니다. 제보 PC의 실제 수정판 연결·장시간 유지와 설치/updater/delta 실제 적용 검증은 추가 확인 범위입니다. 본인 PC에서 같은 핵심 코드의 확인용 앱으로 연결을 확인했으며 설치 앱은 기존 바로가기로 다시 실행하면 정식 업데이트를 확인합니다.
+
 ## 1.4.5 최종 검토 승인·정식 배포 진행 (2026-11-20)
 
 - 사용자가 제시한 두 문장의 배포 설명과 기존 크롬·엣지 안내 그림을 확인한 뒤 “응, 그 내용으로 1.4.5 정식 배포해줘.”라고 최종 게시를 승인했습니다. 검토 후보 `cff4012`의 제품 코드·버전·안내·배포 설명을 기준으로 게시합니다.
