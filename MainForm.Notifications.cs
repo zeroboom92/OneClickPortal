@@ -35,7 +35,7 @@ public sealed partial class MainForm
         _notificationsButton.AccessibleName = $"알림 · 미확인 {unread:N0}건";
         _notificationsButton.AccessibleDescription = _studentNotificationPreview
             ? "모의 신청서·결석신고서·보고서 알림을 누르면 실제 나이스 메뉴를 조회합니다."
-            : "결재대기 건수 증가, 교외체험학습 보고서 미상신과 결석신고서 접수대기 알림을 모아 확인합니다.";
+            : "에듀파인·나이스 결재대기 건수 증가, 교외체험학습 보고서 미상신과 결석신고서 접수대기 알림을 모아 확인합니다.";
         _notificationMenuItem.Text = unread == 0 ? "알림" : $"알림 · 미확인 {unread:N0}건";
         _trayIcon.Text = unread == 0 ? "원클릭 업무포털 · 클릭하여 열기" : $"원클릭 업무포털 · 미확인 알림 {unread:N0}건";
         RefreshNotificationSourceStatus();
@@ -56,6 +56,8 @@ public sealed partial class MainForm
         _approvalBadgeCancellationSource?.Cancel();
         _fieldTripReportCancellationSource?.Cancel();
         _absenceReportCancellationSource?.Cancel();
+        _niceApprovalCancellationSource?.Cancel();
+        SetNiceApprovalMenuCount(null);
         _notificationCenter.ResetObservations();
     }
 
@@ -80,6 +82,7 @@ public sealed partial class MainForm
         IsBrowserConnected() && !_workflowRunning && (kind switch
         {
             NotificationKind.Approval => !_confirmedExpiredSystems.Contains("K-에듀파인"),
+            NotificationKind.NiceApproval => !_confirmedExpiredSystems.Contains("나이스"),
             NotificationKind.FieldTrip or NotificationKind.Absence or NotificationKind.AbsencePending or NotificationKind.FieldTripReport
                 => !_confirmedExpiredSystems.Contains("나이스"),
             _ => false,
@@ -118,6 +121,7 @@ public sealed partial class MainForm
             if (!CanOpenNotificationSource(kind)) return;
             dialog.Close();
             if (kind == NotificationKind.Approval) _ = RunWorkflowAsync(PortalTaskKind.Approval);
+            else if (kind == NotificationKind.NiceApproval) _ = RunWorkflowAsync(PortalTaskKind.NiceApproval);
             else if (kind == NotificationKind.FieldTrip) _ = RunWorkflowAsync(PortalTaskKind.FieldTripApplicationManagement);
             else if (kind == NotificationKind.Absence) _ = RunWorkflowAsync(PortalTaskKind.AbsenceReportManagement);
             else if (kind == NotificationKind.AbsencePending) _ = RunWorkflowAsync(PortalTaskKind.AbsenceReportManagement);
@@ -176,6 +180,7 @@ public sealed partial class MainForm
         $"알림 · 미확인 {_notificationCenter.UnreadCount:N0}건"
         + "\n" + _fieldTripReportStatus
         + "\n" + _absenceReportStatus
+        + "\n" + _niceApprovalStatus
         + (_notificationCenter.HasPersistenceError ? "\n알림 기록을 저장하지 못했습니다." : string.Empty));
 
     private void CloseNotificationCenter() => _notificationDialog?.Close();

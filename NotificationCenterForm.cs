@@ -152,8 +152,8 @@ internal sealed class NotificationCenterForm : Form
         _list.ItemHeight = 66;
         _list.BackColor = Color.White;
         _list.ForeColor = ForeColor;
-        _list.AccessibleName = "알림 목록";
-        _list.AccessibleDescription = "알림을 누르면 확인 처리하고, 연결된 업무 화면이 있으면 엽니다.";
+        _list.AccessibleName = "읽지 않은 알림 목록";
+        _list.AccessibleDescription = "알림을 누르면 확인 처리하여 목록에서 지우고, 연결된 업무 화면이 있으면 엽니다.";
         _list.DrawItem += DrawNotification;
         _list.MouseClick += (_, e) =>
         {
@@ -247,7 +247,7 @@ internal sealed class NotificationCenterForm : Form
         if (IsDisposed || Disposing) return;
         var selectedId = (_list.SelectedItem as NotificationListEntry)?.Notification.Id;
         var topIndex = _list.TopIndex;
-        var entries = _center.Entries;
+        var entries = _center.Entries.Where(entry => !entry.IsRead).ToList();
         _list.BeginUpdate();
         try
         {
@@ -272,7 +272,8 @@ internal sealed class NotificationCenterForm : Form
 
     private static string GetSummary(PortalNotification entry) => entry.Kind switch
     {
-        NotificationKind.Approval => $"결재대기 {entry.ItemCount:N0}건 증가",
+        NotificationKind.Approval => $"에듀파인 결재대기 {entry.ItemCount:N0}건",
+        NotificationKind.NiceApproval => $"나이스 결재대기 {entry.ItemCount:N0}건",
         NotificationKind.FieldTrip => $"교외체험학습 신청 {entry.ItemCount:N0}건",
         NotificationKind.Absence => $"결석신고서 제출 {entry.ItemCount:N0}건",
         NotificationKind.AbsencePending => $"결석신고서 접수대기 {entry.ItemCount:N0}건",

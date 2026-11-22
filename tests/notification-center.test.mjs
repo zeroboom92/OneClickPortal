@@ -17,7 +17,8 @@ test('actual notification engine handles baselines, deduplication, scopes, histo
     try {
       await writeFile(join(directory, 'Probe.csproj'), `<Project Sdk="Microsoft.NET.Sdk">
         <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
-        <ItemGroup><Compile Include="${xml(resolve(root, 'NotificationCenter.cs'))}" Link="NotificationCenter.cs" /></ItemGroup>
+        <ItemGroup><Compile Include="${xml(resolve(root, 'NotificationCenter.cs'))}" Link="NotificationCenter.cs" />
+          <Compile Include="${xml(resolve(root, 'AppRelease.cs'))}" Link="AppRelease.cs" /></ItemGroup>
       </Project>`);
       await writeFile(join(directory, 'Program.cs'), probe);
       const result = await run('dotnet', ['run', '--project', join(directory, 'Probe.csproj'), '--configuration', 'Release'],
@@ -33,6 +34,7 @@ test('actual notification engine handles baselines, deduplication, scopes, histo
 const probe = String.raw`
 using BrowserThumbnailPrototype;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 void Check(bool passed, string message) { if (!passed) throw new Exception(message); }
 var probeRoot = Path.Combine(Path.GetTempPath(), "oneclick-notification-data-" + Guid.NewGuid().ToString("N"));
@@ -51,16 +53,17 @@ try
     var first = center.ObserveCount(NotificationKind.Approval, 10, "office-A", now).Single();
     Check(first.ItemCount == 2 && first.Message.Contains("2건") && !first.IsRead, "Count increase was not aggregated.");
     Check(center.ObserveCount(NotificationKind.Approval, -1, "office-A", now).Count == 0, "Negative count accepted.");
-    Check(center.ObserveCount(NotificationKind.Approval, 11, "office-A", now).Single().ItemCount == 1, "Invalid count changed baseline.");
+    Check(center.ObserveCount(NotificationKind.Approval, 11, "office-A", now).Single().ItemCount == 3, "Invalid count changed baseline or unread total.");
     Check(center.ObserveCount(NotificationKind.Approval, 4, "office-A", now).Count == 0, "Count decrease notified.");
-    Check(center.ObserveCount(NotificationKind.Approval, 5, "office-A", now).Single().ItemCount == 1, "Decrease failed to update baseline.");
+    Check(center.ObserveCount(NotificationKind.Approval, 5, "office-A", now).Single().ItemCount == 4, "Decrease failed to update baseline or unread total.");
     Check(center.ObserveCount(NotificationKind.Approval, 50, "office-B", now).Count == 0, "Different scope reused a baseline.");
-    Check(center.ObserveCount(NotificationKind.Approval, 51, "office-B", now).Single().ItemCount == 1, "Different scope failed to monitor.");
+    Check(center.ObserveCount(NotificationKind.Approval, 51, "office-B", now).Single().ItemCount == 5, "Different scope failed to monitor or merged baselines.");
     Check(center.ObserveCount(NotificationKind.Absence, 10, "office-A", now).Count == 0, "Different kind reused a baseline.");
     Check(center.ObserveCount((NotificationKind)999, 1, "office-A", now).Count == 0, "Invalid kind accepted.");
     Check(center.ObserveCount(NotificationKind.Approval, 50, null!, now).Count == 0, "Null scope accepted.");
     Check(center.ObserveCount(NotificationKind.Approval, 50, " ", now).Count == 0, "Whitespace scope accepted.");
-    Check(changes == 4 && center.UnreadCount == 4, "Count events do not match generated alerts.");
+    Check(changes == 4 && center.UnreadCount == 1 && center.Entries.Single().Id == first.Id,
+        "Count increases must update one unread system summary and publish one event per increase.");
 
     var items = new NotificationCenter(Store("items"));
     var a = new NotificationSourceItem("STUDENT-SECRET-ID-A", "학생이름과 문서내용을 저장하면 안 됩니다");
@@ -95,21 +98,23 @@ try
 
     var snapshot = center.Entries;
     center.MarkRead(first.Id);
-    Check(center.UnreadCount == 3 && center.Entries.Single(entry => entry.Id == first.Id).IsRead, "MarkRead failed.");
+    Check(center.UnreadCount == 0 && center.Entries.Single(entry => entry.Id == first.Id).IsRead, "MarkRead failed.");
     Check(!snapshot.Single(entry => entry.Id == first.Id).IsRead, "Entries exposes mutable history.");
     Check(changes == 5, "MarkRead failed to notify.");
     center.MarkRead(first.Id);
     center.MarkRead("unknown");
     Check(changes == 5, "No-op read fired an event.");
     var restarted = new NotificationCenter(Store("counts"));
-    Check(restarted.Entries.Count == 4 && restarted.UnreadCount == 3, "Saved read state did not reload.");
+    Check(restarted.Entries.Count == 1 && restarted.UnreadCount == 0, "Saved read state did not reload.");
     Check(restarted.ObserveCount(NotificationKind.Approval, 100, "office-A", now).Count == 0, "Restart restored an observation baseline.");
     Check(restarted.ObserveCount(NotificationKind.Approval, 101, "office-A", now).Count == 1, "Restart failed to observe subsequent increases.");
     var restartedItems = new NotificationCenter(Store("items"));
     Check(restartedItems.Entries.Count == 2 && restartedItems.Entries.All(entry => entry.SourceKey is null), "Item history reload failed or source keys persisted.");
     Check(restartedItems.ObserveItems(NotificationKind.FieldTrip, [a, b, new("new", "")], sensitiveScope, now).Count == 0, "Restart item list alerted old items.");
     center.ClearRead();
-    Check(center.Entries.Count == 3 && center.UnreadCount == 3, "ClearRead removed unread entries.");
+    Check(center.Entries.Count == 0 && center.UnreadCount == 0, "ClearRead did not remove the read summary.");
+    Check(center.ObserveCount(NotificationKind.Approval, 52, "office-B", now.AddMinutes(2)).Single().ItemCount == 1,
+        "A later increase reused a cleared read summary.");
     center.MarkAllRead();
     Check(center.UnreadCount == 0 && center.Entries.All(entry => entry.IsRead), "MarkAllRead failed.");
     center.MarkAllRead();
@@ -146,7 +151,7 @@ try
     Check(!Directory.EnumerateFiles(probeRoot, "*.tmp").Any(), "Atomic save left temporary files.");
     atomic.MarkAllRead();
     Check(!atomic.HasPersistenceError, "Successful save did not clear storage error state.");
-    Check(new NotificationCenter(atomicPath).Entries.Count == 2, "Store failed to recover after a write failure.");
+    Check(new NotificationCenter(atomicPath).Entries.Single().ItemCount == 2, "Store failed to recover the merged unread total after a write failure.");
 
     var unreadablePath = Store("initially-unreadable");
     File.Copy(atomicPath, unreadablePath);
@@ -160,17 +165,118 @@ try
         unreadable.ObserveCount(NotificationKind.Approval, 1, "scope", now);
     }
     unreadable.ObserveCount(NotificationKind.Approval, 2, "scope", now);
-    Check(unreadable.UnreadCount == 2 && unreadable.HasPersistenceError,
+    Check(unreadable.UnreadCount == 1 && unreadable.Entries.Single().ItemCount == 2 && unreadable.HasPersistenceError,
         "Unreadable initial history must keep new in-memory alerts available with a storage warning.");
     Check(File.ReadAllText(unreadablePath) == protectedHistory,
         "A later save replaced unreadable initial history after its lock disappeared.");
-    Check(new NotificationCenter(unreadablePath).Entries.Count == 2,
+    Check(new NotificationCenter(unreadablePath).Entries.Single().ItemCount == 2,
         "Restart failed to recover preserved prior history.");
 
+    foreach (var kind in new[] { NotificationKind.Approval, NotificationKind.NiceApproval })
+    {
+        var path = Store("aggregated-" + kind);
+        var aggregated = new NotificationCenter(path);
+        var updates = 0;
+        aggregated.Changed += (_, _) => updates++;
+        aggregated.ObserveCount(kind, 10, "PRIVATE-ACCOUNT-A", now);
+        var originalSummary = aggregated.ObserveCount(kind, 12, "PRIVATE-ACCOUNT-A", now.AddMinutes(1)).Single();
+        var increased = aggregated.ObserveCount(kind, 15, "PRIVATE-ACCOUNT-A", now.AddMinutes(2)).Single();
+        Check(increased.Id == originalSummary.Id && increased.ItemCount == 5
+            && increased.CreatedAt == now.AddMinutes(2) && updates == 2 && aggregated.UnreadCount == 1,
+            "Repeated increases did not update the same unread summary once.");
+        Check(originalSummary.ItemCount == 2 && originalSummary.CreatedAt == now.AddMinutes(1),
+            "Updating the summary mutated a prior snapshot.");
+        Check(aggregated.ObserveCount(kind, 3, "PRIVATE-ACCOUNT-A", now.AddMinutes(3)).Count == 0
+            && aggregated.ObserveCount(kind, 3, "PRIVATE-ACCOUNT-A", now.AddMinutes(3)).Count == 0
+            && aggregated.Entries.Single().ItemCount == 5 && updates == 2,
+            "A decrease or unchanged count altered the unread total.");
+        aggregated.ObserveCount(kind, 100, "PRIVATE-ACCOUNT-B", now.AddMinutes(4));
+        var otherScope = aggregated.ObserveCount(kind, 101, "PRIVATE-ACCOUNT-B", now.AddMinutes(5)).Single();
+        Check(otherScope.Id == originalSummary.Id && otherScope.ItemCount == 6 && updates == 3,
+            "Account-specific baselines did not feed the app-wide system summary.");
+        var title = kind == NotificationKind.Approval ? "에듀파인 결재대기" : "나이스 결재대기";
+        Check(otherScope.Title == title && otherScope.Message.Contains("6건"), "System-specific title or total is incorrect.");
+        var restored = new NotificationCenter(path);
+        Check(restored.Entries.Single().Id == originalSummary.Id && restored.Entries.Single().ItemCount == 6,
+            "Unread summary was not preserved after restart.");
+        restored.ObserveCount(kind, 1000, "PRIVATE-ACCOUNT-A", now.AddMinutes(6));
+        Check(restored.ObserveCount(kind, 1001, "PRIVATE-ACCOUNT-A", now.AddMinutes(7)).Single().ItemCount == 7,
+            "Restart's fresh baseline did not preserve the existing unread total.");
+        restored.MarkRead(originalSummary.Id);
+        var next = restored.ObserveCount(kind, 1003, "PRIVATE-ACCOUNT-A", now.AddMinutes(8)).Single();
+        Check(next.Id != originalSummary.Id && next.ItemCount == 2 && restored.Entries.Count == 2
+            && restored.Entries.Single(entry => entry.Id == originalSummary.Id).ItemCount == 7,
+            "A later increase modified read history instead of starting a new unread summary.");
+        restored.MarkAllRead();
+        Check(restored.ObserveCount(kind, 1004, "PRIVATE-ACCOUNT-A", now.AddMinutes(9)).Single().ItemCount == 1
+            && restored.UnreadCount == 1 && restored.Entries.Count == 3,
+            "All-read did not start a fresh future summary.");
+        var storeText = File.ReadAllText(path);
+        Check(!storeText.Contains("PRIVATE-ACCOUNT", StringComparison.Ordinal), "Summary aggregation persisted its account scope.");
+        using var stored = JsonDocument.Parse(storeText);
+        Check(stored.RootElement.GetProperty("Version").GetInt32() == 1
+            && stored.RootElement.GetProperty("Entries").EnumerateArray().All(entry =>
+                entry.EnumerateObject().Select(property => property.Name).Order().SequenceEqual(
+                    new[] { "CreatedAt", "Id", "IsRead", "ItemCount", "Kind" })),
+            "Aggregation added fields to the stored entry schema.");
+        var saturated = new NotificationCenter(Store("saturated-" + kind));
+        saturated.ObserveCount(kind, 0, "scope", now);
+        saturated.ObserveCount(kind, int.MaxValue, "scope", now);
+        saturated.ObserveCount(kind, 0, "scope", now);
+        Check(saturated.ObserveCount(kind, 1, "scope", now).Single().ItemCount == int.MaxValue
+            && saturated.Entries.Single().ItemCount == int.MaxValue,
+            "Aggregated totals overflowed or wrapped instead of saturating.");
+    }
+
+    var migrationPath = Store("aggregation-legacy");
+    var migration = new NotificationCenter(migrationPath);
+    migration.ObservePendingFieldTripReports([a], sensitiveScope, now);
+    migration.ObservePendingAbsenceReports([a], sensitiveScope, now);
+    var migrationData = JsonNode.Parse(File.ReadAllText(migrationPath))!.AsObject();
+    var reportFingerprints = migrationData["NotifiedFieldTripReportFingerprints"]!.DeepClone();
+    var absenceDays = migrationData["NotifiedPendingAbsenceDays"]!.DeepClone();
+    var legacyRows = migrationData["Entries"]!.AsArray();
+    string AddLegacy(NotificationKind kind, int count, int minute, bool read = false)
+    {
+        var id = Guid.NewGuid().ToString("N");
+        legacyRows.Add(JsonSerializer.SerializeToNode(new { Id = id, Kind = kind,
+            CreatedAt = now.AddMinutes(minute), IsRead = read, ItemCount = count }));
+        return id;
+    }
+    AddLegacy(NotificationKind.Approval, 2, 1);
+    var newestEdufineId = AddLegacy(NotificationKind.Approval, 3, 4);
+    AddLegacy(NotificationKind.NiceApproval, 4, 2);
+    var newestNiceId = AddLegacy(NotificationKind.NiceApproval, 7, 5);
+    var readEdufineId = AddLegacy(NotificationKind.Approval, 8, 3, read: true);
+    var readNiceId = AddLegacy(NotificationKind.NiceApproval, 6, 0, read: true);
+    AddLegacy(NotificationKind.Absence, 1, 6);
+    AddLegacy(NotificationKind.Absence, 2, 7);
+    File.WriteAllText(migrationPath, migrationData.ToJsonString());
+    var consolidated = new NotificationCenter(migrationPath);
+    var eduSummary = consolidated.Entries.Single(entry => entry.Kind == NotificationKind.Approval && !entry.IsRead);
+    var niceSummary = consolidated.Entries.Single(entry => entry.Kind == NotificationKind.NiceApproval && !entry.IsRead);
+    Check(eduSummary.Id == newestEdufineId && eduSummary.ItemCount == 5 && eduSummary.CreatedAt == now.AddMinutes(4)
+        && niceSummary.Id == newestNiceId && niceSummary.ItemCount == 11 && niceSummary.CreatedAt == now.AddMinutes(5),
+        "Legacy unread migration did not preserve each system's latest identity, timestamp, and total.");
+    Check(consolidated.Entries.Single(entry => entry.Id == readEdufineId).ItemCount == 8
+        && consolidated.Entries.Single(entry => entry.Id == readNiceId).ItemCount == 6
+        && consolidated.Entries.Count(entry => entry.Kind == NotificationKind.Absence) == 2,
+        "Legacy migration modified read history or another notification kind.");
+    var migratedData = JsonNode.Parse(File.ReadAllText(migrationPath))!.AsObject();
+    Check(JsonNode.DeepEquals(reportFingerprints, migratedData["NotifiedFieldTripReportFingerprints"])
+        && JsonNode.DeepEquals(absenceDays, migratedData["NotifiedPendingAbsenceDays"])
+        && consolidated.ObservePendingFieldTripReports([a], sensitiveScope, now).Count == 0
+        && consolidated.ObservePendingAbsenceReports([a], sensitiveScope, now).Count == 0,
+        "Saving merged legacy alerts lost independent durable report deduplication.");
+    var again = new NotificationCenter(migrationPath);
+    Check(again.Entries.Count(entry => entry.Kind == NotificationKind.Approval && !entry.IsRead) == 1
+        && again.Entries.Single(entry => entry.Id == newestNiceId).ItemCount == 11,
+        "Legacy aggregation was not durable or was applied twice.");
+
     var bounded = new NotificationCenter(Store("bounded"));
-    bounded.ObserveCount(NotificationKind.Approval, 0, "scope", now);
+    bounded.ObserveCount(NotificationKind.Absence, 0, "scope", now);
     for (var count = 1; count <= 305; count++)
-        bounded.ObserveCount(NotificationKind.Approval, count, "scope", now.AddSeconds(count));
+        bounded.ObserveCount(NotificationKind.Absence, count, "scope", now.AddSeconds(count));
     Check(bounded.Entries.Count == 300 && bounded.Entries[0].CreatedAt == now.AddSeconds(305)
         && bounded.Entries[^1].CreatedAt == now.AddSeconds(6), "History limit or order incorrect.");
     Check(new NotificationCenter(Store("bounded")).Entries.Count == 300, "Bounded history failed to reload.");

@@ -18,7 +18,7 @@ test('pending absence reports remind daily, deduplicate durably and keep only pr
       await writeFile(join(directory, 'Probe.csproj'), `<Project Sdk="Microsoft.NET.Sdk">
         <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
         <ItemGroup><Compile Include="${xml(resolve(root, 'NotificationCenter.cs'))}" Link="NotificationCenter.cs" />
-          </ItemGroup>
+          <Compile Include="${xml(resolve(root, 'AppRelease.cs'))}" Link="AppRelease.cs" /></ItemGroup>
       </Project>`);
       await writeFile(join(directory, 'Program.cs'), probe);
       const result = await run('dotnet', ['run', '--project', join(directory, 'Probe.csproj'), '--configuration', 'Release'],
@@ -280,8 +280,8 @@ try
 
     var boundedPath = Store("full-history");
     var bounded = new NotificationCenter(boundedPath);
-    bounded.ObserveCount(NotificationKind.Approval, 0, scope, now);
-    for (var index = 1; index <= 300; index++) bounded.ObserveCount(NotificationKind.Approval, index, scope, now.AddSeconds(index));
+    bounded.ObserveCount(NotificationKind.Absence, 0, scope, now);
+    for (var index = 1; index <= 300; index++) bounded.ObserveCount(NotificationKind.Absence, index, scope, now.AddSeconds(index));
     var priorIds = bounded.Entries.Select(entry => entry.Id).ToArray();
     using (var locked = new FileStream(boundedPath, FileMode.Open, FileAccess.Read, FileShare.None))
         Check(bounded.ObservePendingAbsenceReports([a, b, c], scope, now.AddHours(1)).Count == 0,

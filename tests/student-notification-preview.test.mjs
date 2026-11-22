@@ -76,6 +76,7 @@ test('actual WinForms notification list and production seed/store/gate code hand
         <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
         <ItemGroup>
           <Compile Include="${xml(resolve(root, 'NotificationCenter.cs'))}" Link="NotificationCenter.cs" />
+          <Compile Include="${xml(resolve(root, 'AppRelease.cs'))}" Link="AppRelease.cs" />
           <Compile Include="${xml(resolve(root, 'NotificationCenterForm.cs'))}" Link="NotificationCenterForm.cs" />
         </ItemGroup>
       </Project>`);
@@ -175,19 +176,50 @@ internal static class Program
             var opened = new List<NotificationKind>();
             dialog.OpenRequested += kind => opened.Add(kind);
             var open = typeof(NotificationCenterForm).GetMethod("OpenEntry", BindingFlags.Instance | BindingFlags.NonPublic)!;
-            for (var index = 0; index < 3; index++) open.Invoke(dialog, [index]);
+            for (var remaining = 3; remaining > 0; remaining--)
+            {
+                open.Invoke(dialog, [0]);
+                Check(list.Items.Count == remaining - 1, "Acknowledged entry remained in the unread list.");
+            }
             Check(opened.Order().SequenceEqual(kinds.Order()) && center.UnreadCount == 0, "Actual click did not dispatch every kind and acknowledge it.");
-            Check(list.Items.Count == 3, "Acknowledging an entry removed later test choices.");
-            open.Invoke(dialog, [0]);
-            Check(opened.Count == 4 && center.Entries.Count == 3, "Read entries cannot be reopened or duplicated history.");
-            harness.Connected = false;
-            open.Invoke(dialog, [1]);
-            Check(opened.Count == 4, "Disconnected actual form fired navigation.");
+            Check(center.Entries.Count == 3, "Acknowledging entries deleted the saved read state.");
             open.Invoke(dialog, [-1]);
+            open.Invoke(dialog, [0]);
             open.Invoke(dialog, [3]);
-            Check(opened.Count == 4, "Invalid list index fired navigation.");
+            Check(opened.Count == 3, "Invalid or empty list index fired navigation.");
             harness.Seed();
-            Check(center.Entries.Count == 3 && center.UnreadCount == 0, "Reading then reseeding created another alert.");
+            Check(center.Entries.Count == 3 && center.UnreadCount == 0 && list.Items.Count == 0,
+                "Reading then reseeding created another alert.");
+
+            var markAll = controls.OfType<LinkLabel>().Single();
+            Check(!markAll.Enabled, "Empty unread list still permits acknowledging all.");
+            center.ObserveCount(NotificationKind.Approval, 0, "unread-test");
+            center.ObserveCount(NotificationKind.Approval, 1, "unread-test");
+            center.ObserveCount(NotificationKind.Approval, 2, "unread-test");
+            Check(list.Items.Count == 1 && markAll.Enabled && center.Entries.Single(entry => !entry.IsRead).ItemCount == 2,
+                "New approval increases did not update one unread list entry.");
+            var clickMarkAll = typeof(LinkLabel).GetMethod("OnLinkClicked", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            clickMarkAll.Invoke(markAll, [new LinkLabelLinkClickedEventArgs(markAll.Links[0])]);
+            Check(list.Items.Count == 0 && center.UnreadCount == 0 && !markAll.Enabled,
+                "Acknowledge-all link did not immediately clear the visible list.");
+            Check(center.Entries.Count == 4 && center.Entries.All(entry => entry.IsRead),
+                "Acknowledge-all lost persisted read history.");
+            Check(center.ObserveCount(NotificationKind.Approval, 2, "unread-test").Count == 0 && list.Items.Count == 0,
+                "Unchanged source count reintroduced acknowledged alerts.");
+            using (var reopened = new NotificationCenterForm(new NotificationCenter(paths[0]), harness.CanOpen))
+            {
+                _ = reopened.Handle;
+                var reopenedControls = Descendants(reopened).ToArray();
+                Check(reopenedControls.OfType<ListBox>().Single().Items.Count == 0
+                    && !reopenedControls.OfType<LinkLabel>().Single().Enabled,
+                    "Restart or reopening displayed previously acknowledged alerts.");
+            }
+            center.ObserveCount(NotificationKind.Approval, 3, "unread-test");
+            Check(list.Items.Count == 1 && markAll.Enabled, "Acknowledge-all blocked future alerts.");
+            harness.Connected = false;
+            open.Invoke(dialog, [0]);
+            Check(opened.Count == 3 && list.Items.Count == 0 && center.UnreadCount == 0,
+                "Disconnected actual form fired navigation or retained an acknowledged alert.");
             Check(Digest(realStore) == before[0] && Digest(normalPreviewStore) == before[1], "Simulation modified real or ordinary preview history.");
             Console.WriteLine("PASS: isolated stores, exact three seeds, repeat quiet, actual form labels, clicks, session gates, no real history mutation");
         }

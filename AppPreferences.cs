@@ -27,7 +27,21 @@ internal static class AppPreferences
     private const string DisplayModeValueName = "DisplayMode";
     private const string LastAcknowledgedUpdateVersionValueName = "LastAcknowledgedUpdateVersion";
     private const string NotificationPopupsValueName = "NotificationPopups";
+    private const string NiceApprovalMenuValueName = "NiceApprovalMenuEnabled";
     private const string LoginBrowserValueName = "LoginBrowser";
+
+    public static bool IsNiceApprovalMenuEnabled()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(SettingsKeyPath, writable: false);
+        return key?.GetValue(NiceApprovalMenuValueName) is int value && value == 1;
+    }
+
+    public static void SetNiceApprovalMenuEnabled(bool enabled)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(SettingsKeyPath, writable: true)
+            ?? throw new InvalidOperationException("나이스 결재 선택 메뉴 설정을 저장하지 못했습니다.");
+        key.SetValue(NiceApprovalMenuValueName, enabled ? 1 : 0, RegistryValueKind.DWord);
+    }
 
     public static PortalBrowser GetLoginBrowser()
     {

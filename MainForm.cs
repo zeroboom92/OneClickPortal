@@ -91,6 +91,7 @@ public sealed partial class MainForm : Form
 
         BuildUi();
         InitializeApprovalBadge();
+        InitializeApprovalMenu();
         ConfigureWindowLayout(_displayMode);
         InitializeTray();
         InitializeNotifications();
@@ -140,6 +141,7 @@ public sealed partial class MainForm : Form
         };
         FormClosing += (_, e) =>
         {
+            CloseApprovalMenu();
             if (_closeToTray && !_exitRequested && e.CloseReason == CloseReason.UserClosing)
             {
                 e.Cancel = true;
@@ -157,6 +159,7 @@ public sealed partial class MainForm : Form
             StopApprovalMonitoring();
             StopFieldTripReportMonitoring();
             StopAbsenceReportMonitoring();
+            StopNiceApprovalMonitoring();
             _workflowCancellationSource?.Cancel();
             _sessionCheckCancellationSource?.Cancel();
             _systemSleepGuard.Dispose();
@@ -167,6 +170,7 @@ public sealed partial class MainForm : Form
         _approvalBadgeTimer.Tick += async (_, _) => await RefreshScheduledApprovalBadgeAsync();
         _fieldTripReportTimer.Tick += async (_, _) => await RefreshScheduledFieldTripReportsAsync();
         _absenceReportTimer.Tick += async (_, _) => await RefreshScheduledAbsenceReportsAsync();
+        _niceApprovalTimer.Tick += async (_, _) => await RefreshScheduledNiceApprovalsAsync();
         SystemEvents.SessionSwitch += OnWindowsSessionSwitch;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         if (_studentNotificationPreview) InitializeStudentNotificationPreview();
@@ -223,10 +227,12 @@ public sealed partial class MainForm : Form
     {
         if (disposing)
         {
+            DisposeApprovalMenu();
             DisposeNotifications();
             StopApprovalMonitoring();
             StopFieldTripReportMonitoring();
             StopAbsenceReportMonitoring();
+            StopNiceApprovalMonitoring();
             _topDock?.Dispose();
             _background?.Dispose();
             _statusTip.Dispose();
@@ -239,6 +245,7 @@ public sealed partial class MainForm : Form
             _approvalBadgeTimer.Dispose();
             _fieldTripReportTimer.Dispose();
             _absenceReportTimer.Dispose();
+            _niceApprovalTimer.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -318,13 +325,14 @@ public sealed partial class MainForm : Form
         connectionControls.Controls.Add(_browserWindows, 0, 0);
 
         StyleButton(_refreshButton, "↻", 28, Color.FromArgb(241, 244, 248), Color.FromArgb(74, 84, 100));
-        _refreshButton.AccessibleName = "브라우저 창 목록, 결재 건수, 교외체험학습 보고서 및 결석신고서 접수대기 다시 확인";
+        _refreshButton.AccessibleName = "브라우저 창 목록, 에듀파인·나이스 결재 건수, 교외체험학습 보고서 및 결석신고서 접수대기 다시 확인";
         _refreshButton.Click += async (_, _) =>
         {
             RefreshBrowserWindows();
             await RefreshFieldTripReportsAsync();
             await RefreshAbsenceReportsAsync();
             await RefreshApprovalBadgeAsync();
+            await RefreshNiceApprovalsAsync();
         };
         connectionControls.Controls.Add(_refreshButton, 1, 0);
         StyleButton(_launchBrowserButton, "로그인", 54, Color.FromArgb(49, 124, 213), Color.White);
@@ -397,6 +405,7 @@ public sealed partial class MainForm : Form
 
     private void ConfigureWindowLayout(PortalDisplayMode mode)
     {
+        CloseApprovalMenu();
         CloseNotificationCenter();
         var docked = mode == PortalDisplayMode.TopDock;
         _closeButton.Text = docked ? "▲" : "X";
@@ -529,7 +538,11 @@ public sealed partial class MainForm : Form
                 Color.FromArgb(45, 52, 64));
             button.Margin = new Padding(0);
             button.Dock = DockStyle.Fill;
-            button.Click += async (_, _) => await RunWorkflowAsync(task.Kind);
+            button.Click += async (_, _) =>
+            {
+                if (task.Kind == PortalTaskKind.Approval) await RequestApprovalActionAsync();
+                else await RunWorkflowAsync(task.Kind);
+            };
             if (task.Kind == PortalTaskKind.Approval)
             {
                 _approvalButton = button;
@@ -675,6 +688,7 @@ public sealed partial class MainForm : Form
 
     private void OpenSettings()
     {
+        CloseApprovalMenu();
         using var dialog = new SettingsForm(
             AppPreferences.IsWindowsStartupEnabled(),
             AppPreferences.IsPortalAutoRefreshEnabled(),
@@ -683,7 +697,8 @@ public sealed partial class MainForm : Form
             AppPreferences.GetEducationOfficeCode(),
             AppPreferences.GetWindowOpacityPercent(),
             _displayMode,
-            AppPreferences.GetLoginBrowser());
+            AppPreferences.GetLoginBrowser(),
+            AppPreferences.IsNiceApprovalMenuEnabled());
         var wasExpanded = _topDock?.IsExpanded == true;
         using var autoHidePause = _topDock?.SuspendAutoHide();
         dialog.WindowOpacityPreviewChanged += (_, _) =>
@@ -704,13 +719,17 @@ public sealed partial class MainForm : Form
                 throw new InvalidOperationException("소속 교육청 설정이 올바르게 저장되지 않았습니다.");
             }
 
-            AppPreferences.SetWindowsStartupEnabled(dialog.WindowsStartupEnabled);
+            if (dialog.WindowsStartupEnabled != AppPreferences.IsWindowsStartupEnabled())
+                AppPreferences.SetWindowsStartupEnabled(dialog.WindowsStartupEnabled);
             AppPreferences.SetPortalAutoRefreshEnabled(dialog.PortalAutoRefreshEnabled);
             AppPreferences.SetUsageTelemetryEnabled(dialog.UsageTelemetryEnabled);
             AppPreferences.SetAlwaysOnTopEnabled(dialog.AlwaysOnTopEnabled);
             AppPreferences.SetWindowOpacityPercent(dialog.WindowOpacityPercent);
-            AppPreferences.SetDisplayMode(dialog.DisplayMode);
+            if (_displayMode != dialog.DisplayMode)
+                AppPreferences.SetDisplayMode(dialog.DisplayMode);
             AppPreferences.SetLoginBrowser(dialog.LoginBrowser);
+            AppPreferences.SetNiceApprovalMenuEnabled(dialog.NiceApprovalMenuEnabled);
+            RefreshApprovalActionPresentation();
             ApplyWindowOpacity();
             if (_displayMode != dialog.DisplayMode)
                 ApplyDisplayMode(dialog.DisplayMode);
@@ -738,6 +757,7 @@ public sealed partial class MainForm : Form
             // or a failed save restores the value actually stored in preferences.
             ApplyWindowOpacity();
             if (!wasExpanded && _topDock?.Enabled == true) _topDock.SetExpanded(false);
+            RefreshApprovalActionPresentation();
         }
     }
 
@@ -767,6 +787,7 @@ public sealed partial class MainForm : Form
         UpdateApprovalMonitoring();
         UpdateFieldTripReportMonitoring();
         UpdateAbsenceReportMonitoring();
+        UpdateNiceApprovalMonitoring();
     }
 
     private void PositionAtBottomRight()
@@ -986,6 +1007,7 @@ public sealed partial class MainForm : Form
                         await CheckFieldTripReportsOnConnectAsync(_devToolsPort.Value, educationOffice, token);
                         await CheckAbsenceReportsOnConnectAsync(_devToolsPort.Value, educationOffice, token);
                     });
+                await CheckNiceApprovalsOnConnectAsync(_workflowCancellationSource.Token);
                 UpdateAutoRefreshTimer();
                 AppLogger.Info(
                     "Connection",
@@ -1009,7 +1031,7 @@ public sealed partial class MainForm : Form
             _pendingTaskSystemName = keepPendingTaskAfterFailure ? exception.SystemName : null;
             if (_confirmedExpiredSystems.Add(exception.SystemName) && exception.SystemName == "K-에듀파인")
                 ResetNotificationObservations();
-            if (exception.SystemName == "나이스") { CancelFieldTripReportReadForExpiredSession(); CancelAbsenceReportReadForExpiredSession(); }
+            if (exception.SystemName == "나이스") { CancelFieldTripReportReadForExpiredSession(); CancelAbsenceReportReadForExpiredSession(); CancelNiceApprovalReadForExpiredSession(); }
             AppLogger.Error("Connection", $"{exception.SystemName} 세션 종료 상태지만 브라우저 연결과 다른 시스템 감시는 유지합니다.", exception);
             if (_sourceWindow != IntPtr.Zero && NativeMethods.IsWindow(_sourceWindow))
             {
@@ -1304,6 +1326,7 @@ public sealed partial class MainForm : Form
 
     private async Task RunWorkflowAsync(PortalTaskKind taskKind)
     {
+        CloseApprovalMenu();
         using var autoHidePause = _topDock?.SuspendAutoHide();
         if (_sourceWindow == IntPtr.Zero || !NativeMethods.IsWindow(_sourceWindow))
         {
@@ -1330,6 +1353,7 @@ public sealed partial class MainForm : Form
         _approvalBadgeCancellationSource?.Cancel();
         _fieldTripReportCancellationSource?.Cancel();
         _absenceReportCancellationSource?.Cancel();
+        _niceApprovalCancellationSource?.Cancel();
         _topDock?.SetExpanded(false);
         _workflowRunning = true;
         _workflowCancellationSource = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -1396,7 +1420,7 @@ public sealed partial class MainForm : Form
             _pendingTaskSystemName = exception.SystemName;
             if (_confirmedExpiredSystems.Add(exception.SystemName) && exception.SystemName == "K-에듀파인")
                 ResetNotificationObservations();
-            if (exception.SystemName == "나이스") { CancelFieldTripReportReadForExpiredSession(); CancelAbsenceReportReadForExpiredSession(); }
+            if (exception.SystemName == "나이스") { CancelFieldTripReportReadForExpiredSession(); CancelAbsenceReportReadForExpiredSession(); CancelNiceApprovalReadForExpiredSession(); }
             ShowSourceWindowMaximized();
             SetStatus($"{exception.SystemName} 재로그인 필요 · {PortalTaskCatalog.GetName(taskKind)} 요청 대기 중");
             AppLogger.Info("Workflow", $"{taskKind}: 전체 브라우저 연결을 유지하고 {exception.SystemName} 재로그인 확인을 기다립니다.");
@@ -1513,7 +1537,7 @@ public sealed partial class MainForm : Form
                         ResetNotificationObservations();
                     if (result.SystemName == "K-에듀파인")
                         SetApprovalBadge(null, "K-에듀파인 재로그인 후 건수를 확인합니다.");
-                    if (result.SystemName == "나이스") { CancelFieldTripReportReadForExpiredSession(); CancelAbsenceReportReadForExpiredSession(); }
+                    if (result.SystemName == "나이스") { CancelFieldTripReportReadForExpiredSession(); CancelAbsenceReportReadForExpiredSession(); CancelNiceApprovalReadForExpiredSession(); }
                 }
             }
 
@@ -1619,6 +1643,7 @@ public sealed partial class MainForm : Form
         {
             _ = RefreshFieldTripReportsAsync();
             _ = RefreshAbsenceReportsAsync();
+            _ = RefreshNiceApprovalsAsync();
         }
     }
 
@@ -1771,6 +1796,7 @@ public sealed partial class MainForm : Form
 
     private void DisconnectBrowser()
     {
+        CloseApprovalMenu();
         _connectionGeneration++;
         _workflowCancellationSource?.Cancel();
         _sessionCheckCancellationSource?.Cancel();
@@ -1778,6 +1804,7 @@ public sealed partial class MainForm : Form
         StopApprovalMonitoring();
         StopFieldTripReportMonitoring();
         StopAbsenceReportMonitoring();
+        StopNiceApprovalMonitoring();
         RestoreSourceWindowOpacity();
         _sourceTransparent = false;
         _sourceWindow = IntPtr.Zero;
@@ -1809,6 +1836,7 @@ public sealed partial class MainForm : Form
             StopApprovalMonitoring();
             StopFieldTripReportMonitoring();
             StopAbsenceReportMonitoring();
+            StopNiceApprovalMonitoring();
             _sessionCheckCancellationSource?.Cancel();
             _portalSessionTimer.Stop();
             _sourceWindow = IntPtr.Zero;
@@ -1824,6 +1852,7 @@ public sealed partial class MainForm : Form
     {
         var connected = _sourceWindow != IntPtr.Zero;
         var operationRunning = _workflowRunning;
+        if (!connected || _devToolsPort is null || operationRunning) CloseApprovalMenu();
         _connectButton.Visible = true;
         _connectButton.Text = connected ? "연결 해제" : "연결";
         _connectButton.AccessibleName = connected ? "브라우저 연결 해제" : "브라우저 연결";

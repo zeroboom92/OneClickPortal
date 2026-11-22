@@ -12,6 +12,7 @@ internal enum NotificationKind
     Absence,
     FieldTripReport,
     AbsencePending = 4,
+    NiceApproval = 5,
 }
 
 // Id must be stable for the source system. Never pass student names, document bodies,
@@ -92,6 +93,9 @@ internal sealed class NotificationCenter
     /// <summary>
     /// Counts detect net increases only. A replacement at the same count cannot be detected;
     /// use stable source items when the source exposes a verified complete list.
+    /// Approval increases accumulate in one unread entry per source system, independently
+    /// of account-specific observation baselines. ItemCount is the unacknowledged increase
+    /// total, not the current number of pending documents in the source system.
     /// </summary>
     public IReadOnlyList<PortalNotification> ObserveCount(
         NotificationKind kind, int count, string scope, DateTimeOffset? now = null)
@@ -105,7 +109,18 @@ internal sealed class NotificationCenter
             countBaselines[key] = count;
             if (hasBaseline && count > previous)
             {
-                added = Create(kind, count - previous, now ?? DateTimeOffset.Now);
+                var increase = count - previous;
+                string? retainedId = null;
+                if (IsApproval(kind))
+                {
+                    foreach (var entry in entries.Where(entry => entry.Kind == kind && !entry.IsRead))
+                    {
+                        retainedId ??= entry.Id;
+                        increase = AddCounts(increase, entry.ItemCount);
+                    }
+                    entries.RemoveAll(entry => entry.Kind == kind && !entry.IsRead);
+                }
+                added = Create(kind, increase, now ?? DateTimeOffset.Now, id: retainedId);
                 AddAndSave([added]);
             }
         }
@@ -351,6 +366,11 @@ internal sealed class NotificationCenter
     private static bool IsValid(NotificationKind kind, string? scope) =>
         Enum.IsDefined(kind) && !string.IsNullOrWhiteSpace(scope) && scope.Length <= 2048;
 
+    private static bool IsApproval(NotificationKind kind) =>
+        kind is NotificationKind.Approval or NotificationKind.NiceApproval;
+
+    private static int AddCounts(int left, int right) => (int)Math.Min((long)left + right, int.MaxValue);
+
     private static string Fingerprint(NotificationKind kind, string scope, string id) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{(int)kind}:{scope.Length}:{scope}:{id}")));
 
@@ -360,7 +380,8 @@ internal sealed class NotificationCenter
     {
         var (title, message) = kind switch
         {
-            NotificationKind.Approval => ("결재대기 증가", $"화면의 결재대기 건수가 {count}건 늘었습니다. 결재대기 목록에서 확인해 주세요."),
+            NotificationKind.Approval => ("에듀파인 결재대기", $"아직 확인하지 않은 에듀파인 결재대기 증가 알림이 {count}건 있습니다. 결재대기 목록에서 확인해 주세요."),
+            NotificationKind.NiceApproval => ("나이스 결재대기", $"아직 확인하지 않은 나이스 결재대기 증가 알림이 {count}건 있습니다. 나이스 결재대기 목록에서 확인해 주세요."),
             NotificationKind.FieldTrip => ("교외체험학습 신청", $"새 교외체험학습 신청서가 {count}건 제출되었습니다."),
             NotificationKind.Absence => ("결석신고서 제출", $"새 결석신고서가 {count}건 제출되었습니다."),
             NotificationKind.FieldTripReport => ("교외체험학습 보고서 미상신", $"미상신 교외체험학습 보고서가 {count}건 있습니다. 보고서관리에서 확인해 주세요."),
@@ -379,6 +400,30 @@ internal sealed class NotificationCenter
         entries.Clear();
         entries.AddRange(sorted);
         Save();
+    }
+
+    private bool ConsolidateUnreadApprovals()
+    {
+        var changed = false;
+        foreach (var kind in new[] { NotificationKind.Approval, NotificationKind.NiceApproval })
+        {
+            var unread = entries.Where(entry => entry.Kind == kind && !entry.IsRead).ToArray();
+            if (unread.Length < 2) continue;
+            // Entries are newest first. Keep that entry's ID and timestamp so a migration
+            // does not create a new arrival or move older history above newer notifications.
+            var newest = unread[0];
+            var total = unread.Aggregate(0, (sum, entry) => AddCounts(sum, entry.ItemCount));
+            entries.RemoveAll(entry => entry.Kind == kind && !entry.IsRead);
+            entries.Add(Create(kind, total, newest.CreatedAt, id: newest.Id));
+            changed = true;
+        }
+        if (changed)
+        {
+            var sorted = entries.OrderByDescending(entry => entry.CreatedAt).ToArray();
+            entries.Clear();
+            entries.AddRange(sorted);
+        }
+        return changed;
     }
 
     private void Load()
@@ -423,6 +468,9 @@ internal sealed class NotificationCenter
             notifiedFieldTripReports.UnionWith(reportKeys);
             foreach (var pair in absenceDays) notifiedPendingAbsenceDays.Add(pair.Key, pair.Value);
             pendingAbsenceQueryVersion = store.PendingAbsenceQueryVersion;
+            // Existing builds stored one row per increase. Consolidate unread approval
+            // history immediately, after restoring every independent deduplication set.
+            if (ConsolidateUnreadApprovals()) Save();
         }
         catch (JsonException)
         {

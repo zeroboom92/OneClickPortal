@@ -15,6 +15,7 @@ internal enum PortalTaskKind
     FieldTripReportManagement,
     FieldTripApplicationManagement,
     AbsenceReportManagement,
+    NiceApproval,
 }
 
 internal sealed record WorkflowResult(
@@ -99,6 +100,7 @@ internal sealed partial class PortalWorkflowController
                 PortalTaskKind.Draft => OpenDraftAsync(cancellationToken),
                 PortalTaskKind.PurchaseRequest => OpenPurchaseRequestAsync(cancellationToken),
                 PortalTaskKind.Approval => OpenEdufineOverviewAsync(approval: true, cancellationToken),
+                PortalTaskKind.NiceApproval => OpenNiceApprovalAsync(cancellationToken),
                 PortalTaskKind.Budget => OpenEdufineOverviewAsync(approval: false, cancellationToken),
                 PortalTaskKind.FieldTripReportManagement => OpenFieldTripReportManagementAsync(cancellationToken),
                 PortalTaskKind.FieldTripApplicationManagement or PortalTaskKind.AbsenceReportManagement =>

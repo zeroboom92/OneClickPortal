@@ -76,6 +76,8 @@ class Probe
         _browserWindows = new(), _settingsButton = new(), _notificationsButton = new(), _closeButton = new();
     private readonly Control[] _taskButtons = [new(), new()];
     private void RefreshNotificationSourceStatus() { }
+    private int _menuCloseCalls;
+    private void CloseApprovalMenu() => _menuCloseCalls++;
     void Check(bool passed, string message) { if (!passed) throw new Exception(message); }
 
     public async Task Run()
@@ -88,10 +90,17 @@ class Probe
         Check(_connectButton.Text == "연결" && _connectButton.Enabled && _browserWindows.Enabled
             && _launchBrowserButton.Enabled && _settingsButton.Enabled && _taskButtons.All(button => !button.Enabled),
             "Retry controls were not restored.");
+        Check(_menuCloseCalls == 1, "Disconnected retry controls retained the approval choice menu.");
         _sourceWindow = new(456); _devToolsPort = 9223;
         UpdateConnectionControls();
         Check(_connectButton.Text == "연결 해제" && !_browserWindows.Enabled && _taskButtons.All(button => button.Enabled),
             "Successful connection controls regressed.");
+        Check(_menuCloseCalls == 1, "An idle connected refresh closed the usable approval menu.");
+        _workflowRunning = true;
+        UpdateConnectionControls();
+        Check(_menuCloseCalls == 2 && _taskButtons.All(button => !button.Enabled),
+            "Starting a workflow retained the approval menu or enabled its task buttons.");
+        _workflowRunning = false;
 
         var office = new EducationOffice();
         var count = 0;

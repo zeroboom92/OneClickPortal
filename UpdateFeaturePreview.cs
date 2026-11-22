@@ -10,6 +10,7 @@ internal sealed class UpdateFeaturePreview : Control
     private static readonly Color Blue = Color.FromArgb(42, 106, 190);
     private static readonly string IconFontFamily = GetIconFontFamily();
     private readonly bool _browserChoicePreview;
+    private readonly bool _approvalNotificationsPreview;
 
     public UpdateFeaturePreview() : this(UpdateHistory.Current.Version) { }
 
@@ -17,6 +18,7 @@ internal sealed class UpdateFeaturePreview : Control
     public UpdateFeaturePreview(string version)
     {
         _browserChoicePreview = version == "1.4.3";
+        _approvalNotificationsPreview = version == "1.4.6";
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
                  ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         SetStyle(ControlStyles.Selectable, false);
@@ -24,6 +26,16 @@ internal sealed class UpdateFeaturePreview : Control
         BackColor = Color.White;
         TabStop = false;
         AccessibleRole = AccessibleRole.Graphic;
+        if (_approvalNotificationsPreview)
+        {
+            AccessibleName = "결재 알림을 더 편하게 확인하세요";
+            AccessibleDescription = "에듀파인과 나이스의 읽지 않은 결재 알림을 확인합니다. "
+                + "같은 종류는 한 줄로 모아 표시하고 모두 확인을 누르면 목록에서 사라집니다. "
+                + "설정의 나이스 결재 선택 메뉴 사용은 기본으로 꺼져 있습니다. "
+                + "필요한 경우에만 켜면 결재 버튼에서 에듀파인 또는 나이스를 선택할 수 있습니다. "
+                + "기본은 기존 에듀파인 바로가기입니다.";
+            return;
+        }
         if (_browserChoicePreview)
         {
             AccessibleName = "크롬 또는 엣지로 로그인하고 연결하기";
@@ -47,6 +59,11 @@ internal sealed class UpdateFeaturePreview : Control
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.Clear(BackColor);
         var scale = Math.Min(Width / 532f, Height / 299f);
+        if (_approvalNotificationsPreview)
+        {
+            DrawApprovalNotifications(graphics, scale);
+            return;
+        }
         if (_browserChoicePreview)
         {
             DrawBrowserChoice(graphics, scale);
@@ -112,6 +129,66 @@ internal sealed class UpdateFeaturePreview : Control
         DrawText(graphics, "이후 10분마다 확인 · 같은 보고서는 중복 알림 없음",
             R(24, 265, 484, 18), 11 * scale, Muted,
             alignment: TextFormatFlags.HorizontalCenter);
+    }
+
+    private static void DrawApprovalNotifications(Graphics graphics, float scale)
+    {
+        Rectangle R(float x, float y, float width, float height) => new(
+            (int)Math.Round(x * scale), (int)Math.Round(y * scale),
+            (int)Math.Round(width * scale), (int)Math.Round(height * scale));
+        using (var background = new SolidBrush(Color.FromArgb(247, 249, 252)))
+        using (var border = new Pen(Color.FromArgb(226, 232, 240), scale))
+        using (var card = RoundedRectangle(new RectangleF(scale / 2, scale / 2,
+            531 * scale, 298 * scale), 10 * scale))
+        {
+            graphics.FillPath(background, card);
+            graphics.DrawPath(border, card);
+        }
+        DrawText(graphics, "에듀파인·나이스 알림을 한눈에", R(20, 16, 492, 29),
+            16 * scale, Ink, bold: true);
+
+        var borderColor = Color.FromArgb(221, 228, 237);
+        var alertFill = Color.FromArgb(237, 245, 255);
+        DrawSurface(graphics, R(20, 62, 244, 190), Color.White, borderColor, 8 * scale);
+        DrawText(graphics, "읽지 않은 알림", R(32, 73, 140, 24), 13 * scale, Ink, bold: true);
+        DrawText(graphics, "모두 확인", R(177, 74, 75, 22), 11 * scale, Blue,
+            alignment: TextFormatFlags.Right);
+        DrawSurface(graphics, R(30, 108, 224, 46), alertFill, Color.FromArgb(218, 232, 250), 5 * scale);
+        DrawSurface(graphics, R(30, 162, 224, 46), alertFill, Color.FromArgb(218, 232, 250), 5 * scale);
+        using (var dot = new SolidBrush(Blue))
+        {
+            graphics.FillEllipse(dot, R(42, 128, 5, 5));
+            graphics.FillEllipse(dot, R(42, 182, 5, 5));
+        }
+        DrawText(graphics, "에듀파인 결재대기 2건", R(57, 116, 188, 29), 12 * scale, Ink, bold: true);
+        DrawText(graphics, "나이스 결재대기 1건", R(57, 170, 188, 29), 12 * scale, Ink, bold: true);
+        DrawText(graphics, "같은 종류는 한 줄로 모아 표시", R(30, 222, 224, 19),
+            10.5f * scale, Muted, alignment: TextFormatFlags.HorizontalCenter);
+
+        DrawSurface(graphics, R(280, 62, 232, 190), Color.White, borderColor, 8 * scale);
+        DrawText(graphics, "필요한 분만 설정에서 켜세요", R(292, 73, 208, 24),
+            12 * scale, Ink, bold: true);
+        // The unchecked box depicts the default. The menu below is an example
+        // of the optional enabled setting, rather than a live interactive control.
+        DrawSurface(graphics, R(293, 111, 12, 12), Color.White, Color.FromArgb(139, 149, 163), 2 * scale);
+        DrawText(graphics, "나이스 결재 선택 메뉴 사용", R(312, 105, 188, 24),
+            11 * scale, Ink);
+        DrawText(graphics, "기본 설정: 꺼짐", R(312, 129, 188, 18), 10 * scale, Muted);
+
+        DrawSurface(graphics, R(292, 155, 48, 26), Color.FromArgb(220, 206, 247),
+            Color.FromArgb(206, 187, 239), 5 * scale);
+        DrawText(graphics, "결재", R(296, 157, 40, 22), 12 * scale, Ink, bold: true,
+            alignment: TextFormatFlags.HorizontalCenter);
+        DrawText(graphics, "켰을 때 선택 메뉴", R(350, 158, 150, 20), 10 * scale, Muted);
+
+        DrawSurface(graphics, R(292, 187, 208, 54), Color.White, borderColor, 4 * scale);
+        DrawText(graphics, "에듀파인 결재대기", R(303, 189, 186, 24), 11 * scale, Ink);
+        DrawText(graphics, "나이스 결재대기", R(303, 215, 186, 24), 11 * scale, Ink);
+        using (var separator = new Pen(Color.FromArgb(238, 241, 245), scale))
+            graphics.DrawLine(separator, 300 * scale, 214 * scale, 492 * scale, 214 * scale);
+
+        DrawText(graphics, "기본은 기존 에듀파인 바로가기", R(20, 265, 492, 22),
+            12 * scale, Blue, bold: true, alignment: TextFormatFlags.HorizontalCenter);
     }
 
     private static void DrawBrowserChoice(Graphics graphics, float scale)

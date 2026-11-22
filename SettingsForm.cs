@@ -6,6 +6,7 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _portalAutoRefreshCheckBox = new();
     private readonly CheckBox _usageTelemetryCheckBox = new();
     private readonly CheckBox _alwaysOnTopCheckBox = new();
+    private readonly CheckBox _niceApprovalMenuCheckBox = new();
     private readonly ComboBox _educationOfficeComboBox = new();
     private readonly ComboBox _loginBrowserComboBox = new();
     private readonly RadioButton _topDockRadioButton = new();
@@ -25,7 +26,8 @@ internal sealed class SettingsForm : Form
         string educationOfficeCode,
         int windowOpacityPercent,
         PortalDisplayMode displayMode,
-        PortalBrowser loginBrowser = PortalBrowser.Edge)
+        PortalBrowser loginBrowser = PortalBrowser.Edge,
+        bool niceApprovalMenuEnabled = false)
     {
         Text = "설정";
         StartPosition = FormStartPosition.CenterScreen;
@@ -184,6 +186,26 @@ internal sealed class SettingsForm : Form
                 control.Top += 36;
         optionsPanel.Height += 36;
 
+        _niceApprovalMenuCheckBox.Text = "나이스 결재 선택 메뉴 사용";
+        _niceApprovalMenuCheckBox.AccessibleName = _niceApprovalMenuCheckBox.Text;
+        _niceApprovalMenuCheckBox.AccessibleDescription = "결재 버튼에서 에듀파인·나이스를 선택합니다.";
+        _niceApprovalMenuCheckBox.Checked = niceApprovalMenuEnabled;
+        _niceApprovalMenuCheckBox.AutoSize = true;
+        _niceApprovalMenuCheckBox.Location = new Point(16, 373);
+        _niceApprovalMenuCheckBox.ForeColor = Color.FromArgb(45, 52, 64);
+        _niceApprovalMenuCheckBox.BackColor = Color.Transparent;
+        optionsPanel.Controls.Add(_niceApprovalMenuCheckBox);
+        optionsPanel.Controls.Add(new Label
+        {
+            Text = _niceApprovalMenuCheckBox.AccessibleDescription,
+            Location = new Point(34, 398),
+            Size = new Size(312, 20),
+            Font = new Font("맑은 고딕", 8F),
+            ForeColor = Color.FromArgb(92, 102, 116),
+            BackColor = Color.Transparent,
+        });
+        optionsPanel.Height += 52;
+
         var opacityTitle = new Label
         {
             Text = "배경 불투명도 · 실시간 미리보기",
@@ -272,8 +294,9 @@ internal sealed class SettingsForm : Form
         Controls.Add(saveButton);
 
         foreach (Control control in Controls)
-            if (control.Top >= 440) control.Top += 36;
-        ClientSize = new Size(ClientSize.Width, ClientSize.Height + 36);
+            if (control.Top >= 440) control.Top += 88;
+        ClientSize = new Size(ClientSize.Width, ClientSize.Height + 88);
+        AutoScroll = true;
 
         AcceptButton = saveButton;
         CancelButton = cancelButton;
@@ -290,6 +313,8 @@ internal sealed class SettingsForm : Form
     public bool UsageTelemetryEnabled => _usageTelemetryCheckBox.Checked;
 
     public bool AlwaysOnTopEnabled => _alwaysOnTopCheckBox.Checked;
+
+    public bool NiceApprovalMenuEnabled => _niceApprovalMenuCheckBox.Checked;
 
     public PortalBrowser LoginBrowser => _loginBrowserComboBox.SelectedIndex == 1 ? PortalBrowser.Chrome : PortalBrowser.Edge;
 
@@ -353,6 +378,28 @@ internal sealed class SettingsForm : Form
         (_educationOfficeComboBox.SelectedItem as EducationOffice ?? EducationOfficeCatalog.Default).Code;
 
     public int WindowOpacityPercent => _opacityTrackBar.Value;
+
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        FitWithinWorkingArea();
+    }
+
+    private void FitWithinWorkingArea()
+    {
+        // At a high display scale the full settings page may exceed the screen.
+        // Keep its complete content scrollable, including the save/cancel buttons.
+        var workingArea = Screen.FromControl(this).WorkingArea;
+        var margin = (int)Math.Round(12 * DeviceDpi / 96F);
+        var maximumHeight = Math.Max(1, workingArea.Height - margin * 2);
+        var contentBottom = Controls.Cast<Control>().Select(control => control.Bottom).DefaultIfEmpty(0).Max();
+        var contentHeight = Math.Max(ClientSize.Height, contentBottom + (int)Math.Round(6 * DeviceDpi / 96F));
+        AutoScrollMinSize = new Size(0, contentHeight);
+        if (Height <= maximumHeight) return;
+        var frameHeight = Height - ClientSize.Height;
+        ClientSize = new Size(ClientSize.Width, Math.Max(1, maximumHeight - frameHeight));
+        Top = workingArea.Top + margin;
+    }
 
     private static string GetDisplayVersion()
     {

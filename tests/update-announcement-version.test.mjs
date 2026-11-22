@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +12,17 @@ const run = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
 const xml = value => value.replaceAll('&', '&amp;').replaceAll('"', '&quot;');
 
-test('the new Chrome announcement has its own acknowledgement independently of the installed version',
+test('all 31 previous announcement entries remain unchanged behind the new release', async () => {
+  const history = await readFile(join(root, 'UpdateHistory.cs'), 'utf8');
+  const marker = '// v1.4.3: browser-choice announcement prepared for user review.';
+  assert.ok(history.includes(marker));
+  const preserved = history.slice(history.indexOf(marker)).replaceAll('\r\n', '\n').trim();
+  assert.equal(createHash('sha256').update(preserved).digest('hex'),
+    '815e1aba79fd85bd238e0773846687d25c1678e12f5ff5961332af04b7642aa0',
+    'A preceding release entry or its immutable history helpers changed.');
+});
+
+test('the new approval announcement has its own acknowledgement independently of the installed version',
   { timeout: 120_000 }, async () => {
     const directory = await mkdtemp(join(tmpdir(), 'oneclick-announcement-version-'));
     try {
@@ -29,7 +40,7 @@ test('the new Chrome announcement has its own acknowledgement independently of t
           assert.fail([error.message, error.stdout, error.stderr].filter(Boolean).join('\n'));
         });
       assert.match(result.stdout,
-        /PASS: installed version, new Chrome announcement, acknowledgement, manual replay, preview isolation/);
+        /PASS: installed version, new approval announcement, acknowledgement, manual replay, preview isolation/);
     } finally {
       assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
       assert.ok(basename(directory).startsWith('oneclick-announcement-version-'));
@@ -59,16 +70,19 @@ internal static class Program
         }
 
         Check(UpdateAnnouncement.CurrentVersion == "9.9.9", "Installed version must come from the assembly.");
-        Check(UpdateHistory.Current.Version == "1.4.3" && UpdateHistory.Releases.Count == 31
-            && UpdateHistory.Releases[1].Version == "1.4.0" && UpdateHistory.Current.Title.Contains("크롬"),
-            "The Chrome announcement must precede the preserved earlier history.");
+        Check(UpdateHistory.Current.Version == "1.4.6" && UpdateHistory.Releases.Count == 32
+            && UpdateHistory.Releases[1].Version == "1.4.3" && UpdateHistory.Releases[2].Version == "1.4.0"
+            && UpdateHistory.Current.Title == "결재 알림을 더 편하게 확인하세요"
+            && UpdateHistory.Current.Summary == "나이스 결재대기도 알림으로 확인하세요.\n알림은 종류별로 모아 보고, 필요한 분만 결재 선택 메뉴를 켤 수 있습니다.",
+            "The approval announcement must precede the preserved earlier history with the reviewed content.");
         Check(UpdateAnnouncement.AnnouncementVersion == UpdateHistory.Current.Version,
             "Announcement identity must follow its content rather than the installed version.");
         Check(UpdateAnnouncement.Title == UpdateHistory.Current.Title
             && UpdateAnnouncement.Summary == UpdateHistory.Current.Summary, "Announcement content diverged from history.");
-        Check(!UpdateAnnouncement.ShouldShow("1.4.3"), "Acknowledged unchanged content was shown again.");
+        Check(!UpdateAnnouncement.ShouldShow("1.4.6"), "Acknowledged unchanged content was shown again.");
         Check(UpdateAnnouncement.ShouldShow(null) && UpdateAnnouncement.ShouldShow("1.3.2")
-            && UpdateAnnouncement.ShouldShow("1.4.0") && UpdateAnnouncement.ShouldShow("9.9.9"),
+            && UpdateAnnouncement.ShouldShow("1.4.0") && UpdateAnnouncement.ShouldShow("1.4.3")
+            && UpdateAnnouncement.ShouldShow("9.9.9"),
             "Unacknowledged new content was incorrectly suppressed by a previous announcement or installed version.");
 
         // Only the owner object is constructed. The dialog and preferences below
@@ -79,30 +93,34 @@ internal static class Program
         Reset("1.4.0");
         Check(!UpdateAnnouncement.Show(owner) && UpdateAnnouncementForm.Shown == 1
             && !UpdateAnnouncementForm.InitialHidden && AppPreferences.Writes.Count == 0,
-            "The old report-announcement choice suppressed the new Chrome announcement or was changed without consent.");
+            "The old report-announcement choice suppressed the new approval announcement or was changed without consent.");
 
         Reset("1.4.3");
+        Check(!UpdateAnnouncement.Show(owner) && UpdateAnnouncementForm.Shown == 1
+            && AppPreferences.Writes.Count == 0, "Acknowledging the Chrome announcement suppressed the new approval announcement.");
+
+        Reset("1.4.6");
         Check(!UpdateAnnouncement.Show(owner) && UpdateAnnouncementForm.Shown == 0
-            && AppPreferences.Writes.Count == 0, "An acknowledged maintenance announcement was displayed or saved again.");
+            && AppPreferences.Writes.Count == 0, "The acknowledged approval announcement was displayed or saved again.");
 
         Reset(null, nextHidden: true);
         UpdateAnnouncementForm.NextOpenSettings = true;
         Check(UpdateAnnouncement.Show(owner) && UpdateAnnouncementForm.Shown == 1,
             "An unacknowledged announcement did not follow its normal settings action.");
-        Check(AppPreferences.Writes.SequenceEqual(new string?[] { "1.4.3" }),
+        Check(AppPreferences.Writes.SequenceEqual(new string?[] { "1.4.6" }),
             "The hide choice was saved against the installed version instead of the announcement version.");
 
-        Reset("1.4.3");
+        Reset("1.4.6");
         UpdateAnnouncement.Show(owner, force: true);
         Check(UpdateAnnouncementForm.Shown == 1 && UpdateAnnouncementForm.InitialHidden
             && AppPreferences.Writes.Count == 0, "Manual replay lost or rewrote the existing hide choice.");
 
-        Reset("1.4.3", nextHidden: false);
+        Reset("1.4.6", nextHidden: false);
         UpdateAnnouncement.Show(owner, force: true);
         Check(UpdateAnnouncementForm.InitialHidden && AppPreferences.Writes.SequenceEqual(new string?[] { null }),
             "Unchecking the hide choice during manual replay did not clear it.");
 
-        Reset("1.4.3", nextHidden: true);
+        Reset("1.4.6", nextHidden: true);
         UpdateAnnouncement.Show(owner, preview: true);
         Check(UpdateAnnouncementForm.Shown == 1 && !UpdateAnnouncementForm.InitialHidden
             && AppPreferences.Reads == 0 && AppPreferences.Writes.Count == 0,
@@ -114,7 +132,7 @@ internal static class Program
             && AppPreferences.Writes.Count == 0, "An older acknowledgement skipped the announcement or was changed without consent.");
         Check(!owner.Visible && !owner.IsHandleCreated && AppLogger.Errors.Count == 0,
             "The probe showed a real window or the production code swallowed an error.");
-        Console.WriteLine("PASS: installed version, new Chrome announcement, acknowledgement, manual replay, preview isolation");
+        Console.WriteLine("PASS: installed version, new approval announcement, acknowledgement, manual replay, preview isolation");
     }
 }
 

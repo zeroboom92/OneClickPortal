@@ -24,6 +24,7 @@ internal static class PortalTaskCatalog
         if (kind == PortalTaskKind.FieldTripReportManagement) return "교외체험학습보고서관리";
         if (kind == PortalTaskKind.FieldTripApplicationManagement) return "교외체험학습신청서관리";
         if (kind == PortalTaskKind.AbsenceReportManagement) return "결석신고서관리";
+        if (kind == PortalTaskKind.NiceApproval) return "나이스 미결/협조함";
         return All.FirstOrDefault(task => task.Kind == kind)?.Name ?? kind.ToString();
     }
 

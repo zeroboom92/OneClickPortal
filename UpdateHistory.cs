@@ -16,6 +16,17 @@ internal static class UpdateHistory
     // 1.0.1은 로컬 수정·미배포로 기록되어 있어 포함하지 않습니다.
     public static IReadOnlyList<UpdateRelease> Releases { get; } = Array.AsReadOnly(new UpdateRelease[]
     {
+        // v1.4.6: notification improvements approved for publication.
+        new("1.4.6", new DateOnly(2026, 11, 23),
+            "결재 알림을 더 편하게 확인하세요",
+            "나이스 결재대기도 알림으로 확인하세요.\n알림은 종류별로 모아 보고, 필요한 분만 결재 선택 메뉴를 켤 수 있습니다.",
+            ReadOnlyChanges(
+                "나이스 미결/협조함 건수를 약 1분마다 확인하고, 연결 이후 건수가 늘어나면 알림으로 알려드립니다.",
+                "에듀파인·나이스 결재대기 알림을 이름으로 구분하고, 같은 종류의 미확인 증가분은 한 항목으로 합칩니다.",
+                "확인한 알림은 목록에서 사라지고, 모두 확인을 누르면 알림 목록이 비워집니다.",
+                "설정에서 나이스 결재 선택 메뉴 사용을 켜면 기존 결재 버튼 아래에서 에듀파인·나이스를 선택할 수 있습니다.",
+                "선택 메뉴는 기본 꺼짐이며, 기존 에듀파인 바로가기와 조작창 너비는 유지합니다.",
+                "로그인·인증서 선택과 최종 상신·결재는 사용자가 직접 진행합니다.")),
         // v1.4.3: browser-choice announcement prepared for user review.
         new("1.4.3", new DateOnly(2026, 10, 26),
             "이제 크롬에서도 사용할 수 있어요",

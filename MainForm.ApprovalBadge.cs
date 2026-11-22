@@ -17,12 +17,8 @@ public sealed partial class MainForm
         if (_approvalButton is null || _isClosing || IsDisposed || Disposing) return;
         _approvalBadge.BadgeCount = count;
         _approvalBadgeReadAt = count is null ? null : DateTimeOffset.UtcNow;
-        _approvalButton.AccessibleName = count is int value ? $"결재 · 결재대기 {value:N0}건" : "결재";
-        _approvalButton.AccessibleDescription = description;
-        _statusTip.SetToolTip(_approvalButton, description + "\n클릭하면 결재대기 목록을 엽니다.");
-        _approvalBadge.AccessibleName = _approvalButton.AccessibleName;
-        _approvalBadge.AccessibleDescription = description;
-        _statusTip.SetToolTip(_approvalBadge, description + "\n클릭하면 결재대기 목록을 엽니다.");
+        _approvalBadgeDescription = description;
+        RefreshApprovalActionPresentation();
         PositionApprovalBadge();
         RefreshNotificationSourceStatus();
     }
