@@ -2,10 +2,19 @@
 
 작성일: 2026-09-22
 
-## 1.4.6 정식 배포 사용자 승인 (2026-11-23, 게시 진행)
+## 1.4.6 정식 배포·공개 파일 검증 완료 (2026-11-23)
+
+- 사용자가 검토한 안내 문구·그림·배포 설명과 명시적 지시 **“응 배포해”**에 따라 [v1.4.6](https://github.com/zeroboom92/OneClickPortal/releases/tag/v1.4.6)을 한국 시간 **2026-11-23 08:54:57**에 정식 공개했습니다. 게시 태그의 소스는 `92bb021a1eb7f13baa875080277059203e1b746f`이며, 게시 후 문서 기록 커밋은 이 태그를 바꾸지 않습니다. 원래 Desktop 작업폴더의 무관한 미커밋 작업은 업로드하지 않았습니다.
+- [배포 워크플로 45085518924](https://github.com/zeroboom92/OneClickPortal/actions/runs/45085518924)가 동일 소스에서 성공했습니다. 로컬과 서버 모두 Debug 경고·오류 **0개**, Windows 전체 **480/480 통과·실패/취소/생략 0개**입니다. 나이스 결재대기 증가 알림·출처별 미확인 합산·확인 후 목록 정리와 기본 꺼짐 결재 선택 메뉴를 반영했습니다. 자동 사용연장 회귀 검사도 포함합니다.
+- 공개 latest/tag 모두 `v1.4.6`·draft/prerelease=false이며 공개 파일 **6개**를 다시 내려받아 API 크기·SHA256과 대조했습니다. 공개 패키지 감사 **53/53**, 실제 공개 DLL 검사 **41/41** 통과입니다. full/portable payload 동일, 1.4.5 기준 delta target·sidecar·피드, 승인 배포 설명, 정식 진입점·알림 합산/읽음/재로드·설정 기본 꺼짐을 확인했습니다. 새 reader/navigation 문자열5개는 줄바꿈 정규화 후 승인 DLL과 같습니다. 별도 CI Release DLL을 로컬 Debug DLL 전체와 동일하다고 설명하지 않습니다.
+- 공개 DLL에서 실제 안내 폼과 컨트롤을 다시 그린 **4개 PNG 모두 승인본과 바이트 동일**합니다. 새 안내 화면 SHA256은 `D992C8E0A7728D94BBD199B0BAC5F3A8E2C4B32146A8E46B66F3B78AD70600FB`이며 기존 그림과 이전 이력31개를 보존했습니다. 공개 full SHA256 `88C0C930378BE0FCA26C390CA080F35B919FE34CDD7C4182C93732A844502ADD`, delta `4CD094C3A65EEF9E9204F89AFB5F8614FAD967BDCB9294DC1D406387EEB02FC7`, DLL `5D1E2A15567A479BEFFBDFB9CC1A4615D5AF6279ACA7F4965CD9D1D9CB4752DF`입니다.
+- 증거는 `C:/Users/user/.codex/worktrees/notification-review-20261120/tmp/release-1.4.6-publication/`의 `publication-state.json`, `ci-verification-summary.json`, `public-release.json`, `download-verification.json`, `package-verification-public.json`, `public-dll-verification.json`, `public-image-verification.json`과 `public-render/`에 보관했습니다. 검사 실행기·로그·브라우저 프로필·학생 원문·빌드 산출물은 저장소/제품에서 제외했습니다.
+- 설치/updater/delta의 실제 적용, 실제 신규 결재 유입·다른 교육청/Chrome·장시간 실서비스 유지는 이번 공개 검증으로 완료 처리하지 않습니다. 실행 중 테스트본/설치본·브라우저·사용자 설정·원본 알림 기록은 변경하지 않았습니다. 로그인·인증서·최종 상신/결재는 직접 진행합니다. 정식 앱은 트레이에서 완전히 종료한 뒤 기존 바로가기로 다시 실행해 업데이트를 확인합니다.
+
+## 1.4.6 정식 배포 사용자 승인 (2026-11-23, 게시 전 기록)
 
 - 사용자가 앞서 검토한 1.4.6 안내 문구·그림·배포 설명에 대해 **“응 배포해”**라고 명시적으로 게시를 승인했습니다. 검토 원본 매니페스트는 보존하고 `tmp/release-1.4.6-publication/approval.json`에 승인과 새 날짜 반영을 별도로 기록했습니다.
-- GitHub 최신 정식은 여전히 v1.4.5이며 v1.4.6 태그는 없었습니다. 승인 문구/그림/프로젝트 버전/배포 설명 해시는 검토본과 일치하고, `UpdateHistory.cs`의 게시일만 11월 20일에서 11월 23일로 맞췄습니다(승인 상태 주석 포함). 새 빌드의 안내 PNG도 승인본 SHA256 `D992C8E0A7728D94BBD199B0BAC5F3A8E2C4B32146A8E46B66F3B78AD70600FB`와 byte 동일합니다.
+- 승인 당시 GitHub 최신 정식은 v1.4.5이며 v1.4.6 태그는 없었습니다. 승인 문구/그림/프로젝트 버전/배포 설명 해시는 검토본과 일치하고, `UpdateHistory.cs`의 게시일만 11월 20일에서 11월 23일로 맞췄습니다(승인 상태 주석 포함). 새 빌드의 안내 PNG도 승인본 SHA256 `D992C8E0A7728D94BBD199B0BAC5F3A8E2C4B32146A8E46B66F3B78AD70600FB`와 byte 동일합니다.
 - 정식 1.4.5 기반 격리 작업폴더 `C:/Users/user/.codex/worktrees/notification-review-20261120`에서 배포 후보를 준비합니다. 원래 Desktop 작업폴더의 미커밋 작업은 업로드하지 않습니다. 로그인/자동 사용연장/전면 표시 핵심을 보존하고 테스트 실행기·로그·브라우저 프로필·학생 원문·빌드 산출물을 업로드에서 제외합니다.
 - 날짜 반영 Debug 빌드 경고·오류 0개와 **로컬 Windows 전체 480/480 통과·실패/취소/생략 0개**를 확인했습니다. 작업 브랜치는 `codex/release-1.4.6`입니다. 배포 서버 검사·공개 파일 검증 결과는 후속 기록으로 확정합니다. 앱 설치·업데이트의 실제 적용 및 장시간 실서비스 유지는 별도 범위입니다.
 
