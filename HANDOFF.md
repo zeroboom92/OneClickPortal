@@ -2,7 +2,15 @@
 
 작성일: 2026-09-22
 
-## 1.4.7 결재 기본 직행 보정·사용자 배포 지시 (2026-11-23, 게시 준비)
+## 1.4.7 정식 배포·공개 기본값 검증 완료 (2026-11-23)
+
+- 사용자 정정과 명시적 배포 지시에 따라 [v1.4.7](https://github.com/zeroboom92/OneClickPortal/releases/tag/v1.4.7)을 한국 시간 **2026-11-23 10:40:38**에 정식 공개했습니다. 태그 소스는 `a51482bd7e48f25910a536066135b861f02bfc72`이며, 게시 후 문서 기록 커밋은 태그를 바꾸지 않습니다. 구버전 켜짐 값은 이어받지 않아 기본은 **결재 버튼 → 에듀파인 직행**입니다. 관리자·교무 등 필요한 분만 설정에서 선택 메뉴를 한 번 다시 켜고 저장하며 이후 새 선택은 유지됩니다. 나이스 조회·알림은 그대로입니다.
+- [배포 워크플로 45095519116](https://github.com/zeroboom92/OneClickPortal/actions/runs/45095519116) / job `137434342983`이 승인 소스로 성공했습니다. 로컬·서버 Debug 경고·오류 **0개**, Windows 전체 **480/480 통과·실패/취소/생략0개**이고 패키지 생성·게시·정리까지15단계가 성공했습니다. 구키만 남은 조건에서 실제 설정 코드와 결재 요청 handler를 연결한 직행/새 명시적 opt-in/opt-out 및 설정 취소·기존 사용자 설정 보존 검사를 포함합니다.
+- 공개 latest/tag 모두 `v1.4.7` stable이며 공개6파일의 크기·API SHA256을 대조했습니다. 패키지 감사 **53/53**, 실제 공개 DLL **45/45**가 통과했습니다. 공개 DLL이 새 정책 키 `NiceApprovalMenuOptInV1`을 사용하고, 이 PC의 구키 DWord1·새키없음에서 실제 getter=false임을 확인했습니다. 전후 실제 두 설정 snapshot은 동일하고 레지스트리 쓰기는 없습니다. full/portable payload·1.4.6 기준 delta target/sidecar·피드·배포 설명도 일치합니다.
+- 기존 앱 안내 문구·그림·전체 이력32개·다시 보지 않기 정책을 유지합니다. 공개 DLL의 reader/navigation5문자열은 이전1.4.6 공개 DLL과 byte 동일하며 안내4PNG도 이전 공개본과 byte 동일합니다. 안내 SHA256 `D992C8E0A7728D94BBD199B0BAC5F3A8E2C4B32146A8E46B66F3B78AD70600FB`, 공개 DLL `0A058A566CBC0E0D387E61B8DA2329B64C83A98DD3BA918943869AADEC04331D`, full `A8FAE580B96111EE5FFDEB115F7AC05CCC3D61F6978C46524CAF748613419D5D`, delta `84B182971B8D03047DFB41F5AF602DD00C62AD26180F516A3E2B68C754DDB331`입니다. 별도 CI Release DLL과 로컬 Debug DLL 전체 바이트 동일성은 주장하지 않습니다.
+- 근거는 `C:/Users/user/.codex/worktrees/release-1-4-7/tmp/release-1.4.7-publication/`의 `local-windows-tests.txt`, `ci-verification-summary.json`, `public-release.json`, `download-verification.json`, `package-verification-public.json`, `public-dll-verification.json`, `public-image-verification.json`, `public-render/`, `publication-state.json`입니다. 설치/updater/delta의 실제 적용·실제 업무 화면 이동·장시간 실서비스 유지는 이번 공개 파일 검증으로 완료 처리하지 않습니다. 실행 앱·설치본·실제 설정·알림 원본·브라우저는 변경하지 않았으며, 정식 앱을 트레이에서 완전히 종료한 뒤 기존 바로가기로 실행해 업데이트를 확인합니다.
+
+## 1.4.7 결재 기본 직행 보정·사용자 배포 지시 (2026-11-23, 게시 전 기록)
 
 - 사용자가 1.4.6 업데이트 후 결재 버튼에서 에듀파인/나이스가 모두 보인다고 제보하고, **기본은 교사용 에듀파인 직행, 관리자·교무만 설정에서 선택 메뉴 사용**이라고 재확인하며 **1.4.7 수정·배포**를 명시적으로 지시했습니다. 조회·알림 비활성화가 아니라 선택 메뉴 기본값 보정입니다.
 - 실제 이 PC의 기존 `NiceApprovalMenuEnabled`가 DWord 1로 저장돼 있음을 읽기 전용으로 확인했습니다. 기존 getter는 새 설치에서는 false이지만 저장된 1을 업데이트 후 그대로 읽었습니다. 신규 정책 키 `NiceApprovalMenuOptInV1`의 DWord 1만 선택 메뉴 사용으로 인정하고, 구키를 자동 이관하거나 삭제하지 않습니다. 1.4.7에서 기본 직행으로 돌아오며 필요한 분만 한 번 다시 켜고 저장합니다. 새 정책 키는 향후 업데이트에서도 유지합니다.
