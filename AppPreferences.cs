@@ -27,7 +27,10 @@ internal static class AppPreferences
     private const string DisplayModeValueName = "DisplayMode";
     private const string LastAcknowledgedUpdateVersionValueName = "LastAcknowledgedUpdateVersion";
     private const string NotificationPopupsValueName = "NotificationPopups";
-    private const string NiceApprovalMenuValueName = "NiceApprovalMenuEnabled";
+    // Require a fresh choice after 1.4.6. Its old flag may remain enabled from
+    // earlier testing; do not migrate it or infer consent from its presence.
+    // Keep this policy key stable across future updates so a new choice persists.
+    private const string NiceApprovalMenuValueName = "NiceApprovalMenuOptInV1";
     private const string LoginBrowserValueName = "LoginBrowser";
 
     public static bool IsNiceApprovalMenuEnabled()
